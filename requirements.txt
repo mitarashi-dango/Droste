@@ -1,0 +1,4 @@
+Flask>=3.1,<4
+Pillow>=12,<13
+pywin32>=312
+qrcode[pil]>=8.2,<9

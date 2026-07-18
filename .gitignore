@@ -1,4 +1,6 @@
 __pycache__/
 *.py[cod]
 config.json
+devices.json
+devices.json.tmp
 *.log

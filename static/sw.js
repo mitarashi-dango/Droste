@@ -1,6 +1,7 @@
-const CACHE_NAME = 'indicator-stream-v5';
+const CACHE_NAME = 'indicator-stream-v6';
 const ASSETS = [
   '/static/index.html',
+  '/static/pair.html',
   '/static/manifest.json',
   '/static/icon-192.png',
   '/static/icon-512.png'
@@ -27,7 +28,11 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   // ストリーミングとAPIリクエストはキャッシュしないように除外する
   const url = new URL(e.request.url);
-  if (url.pathname === '/stream' || url.pathname.startsWith('/api/')) {
+  if (
+    url.pathname === '/stream' ||
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/pair')
+  ) {
     return;
   }
 

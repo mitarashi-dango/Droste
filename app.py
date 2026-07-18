@@ -7,8 +7,13 @@ import io
 import threading
 import ctypes
 import logging
+import base64
+import hashlib
+import secrets
+import socket
 from ctypes import wintypes
-from flask import Flask, Response, jsonify, request, send_from_directory, redirect
+from flask import Flask, Response, jsonify, request, redirect
+import qrcode
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +64,18 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 # 設定ファイルのパス
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
+DEVICE_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), 'devices.json')
+
+DEVICE_COOKIE_NAME = "room_indicator_device"
+DEVICE_COOKIE_MAX_AGE = 180 * 24 * 60 * 60
+PAIRING_TTL_SECONDS = 120
+PAIRING_CLAIM_TTL_SECONDS = 300
+
+_device_lock = threading.RLock()
+_devices = {}
+_pairing_lock = threading.RLock()
+_pairing_sessions = {}
+_pairing_requests = {}
 
 DEFAULT_CONFIG = {
     "target_window_title": "",
@@ -66,6 +83,7 @@ DEFAULT_CONFIG = {
     "fps": 5,
     "force_foreground": False,
     "auto_open_browser": False,
+    "pairing_base_url": "",
 }
 
 SELF_WINDOW_MARKERS = ("Room Indicator Stream",)
@@ -90,7 +108,135 @@ def load_config():
         config["fps"] = 5
     config["force_foreground"] = bool(config.get("force_foreground", False))
     config["auto_open_browser"] = bool(config.get("auto_open_browser", False))
+    config["pairing_base_url"] = str(
+        config.get("pairing_base_url", "") or ""
+    ).strip().rstrip("/")
     return config
+
+
+def utc_iso(timestamp=None):
+    return time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(time.time() if timestamp is None else timestamp),
+    )
+
+
+def hash_secret(value):
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def sanitize_device_name(value):
+    name = " ".join(str(value or "").split())[:60]
+    return name or "スマートフォン"
+
+
+def load_device_registry():
+    with _device_lock:
+        _devices.clear()
+        try:
+            if not os.path.exists(DEVICE_REGISTRY_PATH):
+                return
+            with open(DEVICE_REGISTRY_PATH, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+            entries = payload.get("devices", []) if isinstance(payload, dict) else []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                device_id = str(entry.get("id", "")).strip()
+                token_hash = str(entry.get("token_hash", "")).strip()
+                if device_id and token_hash:
+                    _devices[device_id] = entry
+        except Exception as error:
+            logger.error("Failed to load device registry: %s", error, exc_info=True)
+
+
+def save_device_registry_locked():
+    temporary_path = DEVICE_REGISTRY_PATH + ".tmp"
+    payload = {"devices": list(_devices.values())}
+    with open(temporary_path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2, ensure_ascii=False)
+    os.replace(temporary_path, DEVICE_REGISTRY_PATH)
+
+
+def public_device(device):
+    return {
+        "id": device["id"],
+        "name": device.get("name", "登録端末"),
+        "created_at": device.get("created_at"),
+        "last_seen_at": device.get("last_seen_at"),
+    }
+
+
+def get_authenticated_device():
+    raw_token = request.cookies.get(DEVICE_COOKIE_NAME, "")
+    if not raw_token:
+        return None
+
+    token_hash = hash_secret(raw_token)
+    now = time.time()
+    with _device_lock:
+        for device in _devices.values():
+            if device.get("token_hash") != token_hash:
+                continue
+            if device.get("revoked", False):
+                return None
+
+            last_seen_timestamp = float(device.get("last_seen_timestamp", 0.0) or 0.0)
+            if now - last_seen_timestamp >= 60:
+                device["last_seen_timestamp"] = now
+                device["last_seen_at"] = utc_iso(now)
+                try:
+                    save_device_registry_locked()
+                except Exception as error:
+                    logger.error("Failed to update device activity: %s", error, exc_info=True)
+            return public_device(device)
+    return None
+
+
+def get_lan_ip():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        probe.close()
+
+
+def build_pairing_url(token):
+    config = load_config()
+    configured_base_url = config.get("pairing_base_url", "")
+    if configured_base_url:
+        return f"{configured_base_url.rstrip('/')}/pair#{token}"
+
+    scheme = "https" if request.is_secure else "http"
+    port = request.environ.get("SERVER_PORT") or config.get("port", 5000)
+    return f"{scheme}://{get_lan_ip()}:{port}/pair#{token}"
+
+
+def is_secure_pairing_transport():
+    if request.is_secure:
+        return True
+    configured_base_url = str(load_config().get("pairing_base_url", "")).strip()
+    return configured_base_url.lower().startswith("https://")
+
+
+def cleanup_pairings_locked():
+    now = time.time()
+    for pairing_id, session in list(_pairing_sessions.items()):
+        if now > session["expires_at"] + PAIRING_CLAIM_TTL_SECONDS:
+            _pairing_sessions.pop(pairing_id, None)
+    for request_id, pairing_request in list(_pairing_requests.items()):
+        retention_deadline = pairing_request.get(
+            "claim_expires_at",
+            pairing_request["expires_at"] + PAIRING_CLAIM_TTL_SECONDS,
+        )
+        if now > retention_deadline:
+            _pairing_requests.pop(request_id, None)
+
+
+load_device_registry()
 
 
 def is_self_window_title(title):
@@ -442,13 +588,329 @@ streamer = ScreenStreamer()
 def is_local_request():
     return (request.remote_addr or "") in {"127.0.0.1", "::1"}
 
+
+def authentication_required_response():
+    return jsonify({
+        "status": "unauthorized",
+        "requires_pairing": True,
+        "message": "この端末はホストPCに登録されていません",
+    }), 401
+
+
+def require_local_request():
+    if is_local_request():
+        return None
+    return jsonify({
+        "status": "error",
+        "message": "この操作はホストPCでのみ利用できます",
+    }), 403
+
+
 @app.route('/')
 def index():
     return redirect('/static/index.html')
 
+
+@app.route('/pair')
+@app.route('/pair/<token>')
+def pairing_page(token=None):
+    response = app.send_static_file("pair.html")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.route('/api/auth/status')
+def api_auth_status():
+    if is_local_request():
+        return jsonify({"authorized": True, "is_host": True, "device": None})
+    device = get_authenticated_device()
+    return jsonify({
+        "authorized": device is not None,
+        "is_host": False,
+        "device": device,
+        "requires_pairing": device is None,
+    }), 200 if device else 401
+
+
+@app.route('/api/pairing/start', methods=['POST'])
+def api_pairing_start():
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+
+    token = secrets.token_urlsafe(32)
+    pairing_id = secrets.token_urlsafe(12)
+    verification_code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = time.time() + PAIRING_TTL_SECONDS
+    pairing_url = build_pairing_url(token)
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=4,
+    )
+    qr.add_data(pairing_url)
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    with io.BytesIO() as output:
+        qr_image.save(output, format="PNG")
+        qr_data_url = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+    with _pairing_lock:
+        cleanup_pairings_locked()
+        _pairing_sessions[pairing_id] = {
+            "id": pairing_id,
+            "token_hash": hash_secret(token),
+            "verification_code": verification_code,
+            "pairing_url": pairing_url,
+            "created_at": time.time(),
+            "expires_at": expires_at,
+            "used": False,
+        }
+
+    return jsonify({
+        "status": "success",
+        "pairing_id": pairing_id,
+        "pairing_url": pairing_url,
+        "qr_data_url": qr_data_url,
+        "verification_code": verification_code,
+        "expires_at": utc_iso(expires_at),
+        "expires_in": PAIRING_TTL_SECONDS,
+        "transport_secure": is_secure_pairing_transport(),
+    })
+
+
+@app.route('/api/pairing/request', methods=['POST'])
+def api_pairing_request():
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token", "")).strip()
+    if not token:
+        return jsonify({"status": "error", "message": "登録用トークンがありません"}), 400
+
+    token_hash = hash_secret(token)
+    now = time.time()
+    with _pairing_lock:
+        cleanup_pairings_locked()
+        session = next(
+            (
+                entry for entry in _pairing_sessions.values()
+                if entry.get("token_hash") == token_hash
+            ),
+            None,
+        )
+        if session is None or now > session["expires_at"]:
+            return jsonify({"status": "expired", "message": "QRコードの有効期限が切れています"}), 410
+        if session.get("used"):
+            return jsonify({"status": "used", "message": "このQRコードは使用済みです"}), 409
+
+        request_id = secrets.token_urlsafe(16)
+        request_secret = secrets.token_urlsafe(32)
+        session["used"] = True
+        session["request_id"] = request_id
+        _pairing_requests[request_id] = {
+            "id": request_id,
+            "pairing_id": session["id"],
+            "secret_hash": hash_secret(request_secret),
+            "device_name": sanitize_device_name(data.get("device_name")),
+            "verification_code": session["verification_code"],
+            "created_at": now,
+            "expires_at": session["expires_at"],
+            "status": "pending",
+        }
+
+    return jsonify({
+        "status": "pending",
+        "request_id": request_id,
+        "request_secret": request_secret,
+        "verification_code": session["verification_code"],
+        "expires_at": utc_iso(session["expires_at"]),
+    })
+
+
+@app.route('/api/pairing/pending')
+def api_pairing_pending():
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+
+    now = time.time()
+    with _pairing_lock:
+        cleanup_pairings_locked()
+        pending = [
+            {
+                "request_id": entry["id"],
+                "device_name": entry["device_name"],
+                "verification_code": entry["verification_code"],
+                "created_at": utc_iso(entry["created_at"]),
+                "expires_at": utc_iso(entry["expires_at"]),
+            }
+            for entry in _pairing_requests.values()
+            if entry.get("status") == "pending" and now <= entry["expires_at"]
+        ]
+    return jsonify({"status": "success", "requests": pending})
+
+
+@app.route('/api/pairing/<request_id>/approve', methods=['POST'])
+def api_pairing_approve(request_id):
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+
+    data = request.get_json(silent=True) or {}
+    now = time.time()
+    with _pairing_lock:
+        cleanup_pairings_locked()
+        pairing_request = _pairing_requests.get(request_id)
+        if pairing_request is None:
+            return jsonify({"status": "error", "message": "登録要求が見つかりません"}), 404
+        if pairing_request.get("status") != "pending":
+            return jsonify({"status": "error", "message": "この登録要求は処理済みです"}), 409
+        if now > pairing_request["expires_at"]:
+            pairing_request["status"] = "expired"
+            return jsonify({"status": "expired", "message": "登録要求の有効期限が切れています"}), 410
+
+        device_id = secrets.token_urlsafe(12)
+        device_token = secrets.token_urlsafe(32)
+        device_name = sanitize_device_name(
+            data.get("device_name") or pairing_request["device_name"]
+        )
+        device = {
+            "id": device_id,
+            "name": device_name,
+            "token_hash": hash_secret(device_token),
+            "created_at": utc_iso(now),
+            "last_seen_at": None,
+            "last_seen_timestamp": 0.0,
+            "revoked": False,
+        }
+        with _device_lock:
+            _devices[device_id] = device
+            try:
+                save_device_registry_locked()
+            except Exception as error:
+                _devices.pop(device_id, None)
+                logger.error("Failed to save approved device: %s", error, exc_info=True)
+                return jsonify({"status": "error", "message": "端末情報を保存できませんでした"}), 500
+
+        pairing_request["status"] = "approved"
+        pairing_request["approved_token"] = device_token
+        pairing_request["device_id"] = device_id
+        pairing_request["device_name"] = device_name
+        pairing_request["claim_expires_at"] = now + PAIRING_CLAIM_TTL_SECONDS
+
+    return jsonify({"status": "approved", "device": public_device(device)})
+
+
+@app.route('/api/pairing/<request_id>/reject', methods=['POST'])
+def api_pairing_reject(request_id):
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+
+    with _pairing_lock:
+        pairing_request = _pairing_requests.get(request_id)
+        if pairing_request is None:
+            return jsonify({"status": "error", "message": "登録要求が見つかりません"}), 404
+        if pairing_request.get("status") != "pending":
+            return jsonify({"status": "error", "message": "この登録要求は処理済みです"}), 409
+        pairing_request["status"] = "rejected"
+    return jsonify({"status": "rejected"})
+
+
+@app.route('/api/pairing/status', methods=['POST'])
+def api_pairing_status():
+    data = request.get_json(silent=True) or {}
+    request_id = str(data.get("request_id", "")).strip()
+    request_secret = str(data.get("request_secret", "")).strip()
+    if not request_id or not request_secret:
+        return jsonify({"status": "error", "message": "登録確認情報が不足しています"}), 400
+
+    now = time.time()
+    with _pairing_lock:
+        cleanup_pairings_locked()
+        pairing_request = _pairing_requests.get(request_id)
+        if pairing_request is None or not secrets.compare_digest(
+            pairing_request.get("secret_hash", ""),
+            hash_secret(request_secret),
+        ):
+            return jsonify({"status": "error", "message": "登録要求が見つかりません"}), 404
+
+        status = pairing_request.get("status")
+        if status == "pending" and now > pairing_request["expires_at"]:
+            pairing_request["status"] = "expired"
+            status = "expired"
+
+        if status == "approved":
+            if now > pairing_request.get("claim_expires_at", 0):
+                return jsonify({"status": "expired", "message": "端末登録の受け取り期限が切れています"}), 410
+            approved_token = pairing_request.pop("approved_token", "")
+            if not approved_token:
+                return jsonify({"status": "claimed", "message": "端末登録情報は受け取り済みです"}), 409
+            secure_transport = is_secure_pairing_transport()
+            pairing_request["status"] = "claimed"
+            pairing_request["claimed_at"] = now
+            response = jsonify({
+                "status": "approved",
+                "device_name": pairing_request["device_name"],
+                "transport_secure": secure_transport,
+            })
+            response.set_cookie(
+                DEVICE_COOKIE_NAME,
+                approved_token,
+                max_age=DEVICE_COOKIE_MAX_AGE,
+                httponly=True,
+                secure=secure_transport,
+                samesite="Strict",
+                path="/",
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        if status == "rejected":
+            return jsonify({"status": "rejected", "message": "ホストが登録要求を拒否しました"}), 403
+        if status == "expired":
+            return jsonify({"status": "expired", "message": "登録要求の有効期限が切れています"}), 410
+        if status == "claimed":
+            return jsonify({"status": "claimed", "message": "端末登録情報は受け取り済みです"}), 409
+        return jsonify({"status": "pending"})
+
+
+@app.route('/api/devices')
+def api_devices():
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+    with _device_lock:
+        devices = [public_device(device) for device in _devices.values() if not device.get("revoked")]
+    return jsonify({"status": "success", "devices": devices})
+
+
+@app.route('/api/devices/<device_id>', methods=['DELETE'])
+def api_device_delete(device_id):
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+    with _device_lock:
+        device = _devices.get(device_id)
+        if device is None:
+            return jsonify({"status": "error", "message": "登録端末が見つかりません"}), 404
+        _devices.pop(device_id, None)
+        try:
+            save_device_registry_locked()
+        except Exception as error:
+            _devices[device_id] = device
+            logger.error("Failed to remove device: %s", error, exc_info=True)
+            return jsonify({"status": "error", "message": "端末情報を更新できませんでした"}), 500
+    return jsonify({"status": "success"})
+
+
 @app.route('/stream')
 def stream():
     is_local = is_local_request()
+    if not is_local and get_authenticated_device() is None:
+        return authentication_required_response()
 
     def gen():
         last_frame = None
@@ -481,7 +943,15 @@ def api_mode():
             return jsonify({"result": "success", "can_configure": True, **streamer.get_state()})
         return jsonify({"status": "error", "message": "Invalid mode"}), 400
     else:
-        return jsonify({"can_configure": is_local_request(), **streamer.get_state()})
+        is_local = is_local_request()
+        device = None if is_local else get_authenticated_device()
+        if not is_local and device is None:
+            return authentication_required_response()
+        return jsonify({
+            "can_configure": is_local,
+            "device": device,
+            **streamer.get_state(),
+        })
 
 @app.route('/api/windows')
 def api_windows():
@@ -546,15 +1016,7 @@ if __name__ == '__main__':
         threading.Thread(target=open_browser, daemon=True).start()
 
     # LAN内IPアドレスの自動取得
-    import socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('8.8.8.8', 80))
-        local_ip = s.getsockname()[0]
-    except Exception:
-        local_ip = '127.0.0.1'
-    finally:
-        s.close()
+    local_ip = get_lan_ip()
 
     print("\n" + "="*60)
     print(f" 【スマートフォン等からテスト接続する場合のURL】")

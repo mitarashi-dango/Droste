@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="robots" content="noindex, nofollow">
+    <title>端末登録 - Room Indicator</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0b0f19;
+            --panel: #161c2d;
+            --border: rgba(255, 255, 255, 0.12);
+            --text: #f3f4f6;
+            --muted: #9ca3af;
+            --accent: #00f0ff;
+            --warning: #ffaa00;
+            --danger: #ff7777;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            min-height: 100dvh;
+            display: grid;
+            place-items: center;
+            padding: calc(20px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom));
+            background: radial-gradient(circle at top, #16243d 0%, var(--bg) 48%);
+            color: var(--text);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        main {
+            width: min(100%, 420px);
+            padding: 24px;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: rgba(22, 28, 45, 0.94);
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+        }
+
+        h1 { margin: 0 0 8px; font-size: 1.35rem; }
+        p { color: var(--muted); line-height: 1.6; }
+
+        label {
+            display: block;
+            margin: 20px 0 8px;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+
+        input, button {
+            width: 100%;
+            min-height: 48px;
+            border-radius: 10px;
+            font: inherit;
+        }
+
+        input {
+            padding: 10px 12px;
+            color: var(--text);
+            background: var(--bg);
+            border: 1px solid var(--border);
+        }
+
+        button {
+            margin-top: 14px;
+            border: 0;
+            font-weight: 700;
+            color: #001114;
+            background: linear-gradient(135deg, var(--accent), #00a8ff);
+        }
+
+        button:disabled { opacity: 0.55; }
+
+        .status {
+            margin-top: 20px;
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            text-align: center;
+            background: rgba(11, 15, 25, 0.65);
+        }
+
+        .status[hidden] { display: none; }
+
+        .code {
+            margin: 8px 0;
+            color: var(--accent);
+            font-size: 2rem;
+            font-weight: 800;
+            letter-spacing: 0.18em;
+        }
+
+        .warning { color: var(--warning); }
+        .error { color: var(--danger); }
+        .success { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Room Indicator 端末登録</h1>
+        <p id="intro">このスマートフォンをホストPCへ登録します。表示名を確認して登録を依頼してください。</p>
+
+        <form id="pair-form">
+            <label for="device-name">ホストに表示する端末名</label>
+            <input id="device-name" maxlength="60" autocomplete="off" required>
+            <button id="request-button" type="submit">ホストへ登録を依頼</button>
+        </form>
+
+        <section class="status" id="pair-status" hidden aria-live="polite">
+            <div id="status-message">ホストの許可を待っています</div>
+            <div class="code" id="verification-code"></div>
+            <p id="status-detail">ホストPCにも同じ番号が表示されていることを確認してください。</p>
+        </section>
+    </main>
+
+    <script>
+        const form = document.getElementById('pair-form');
+        const deviceNameInput = document.getElementById('device-name');
+        const requestButton = document.getElementById('request-button');
+        const pairStatus = document.getElementById('pair-status');
+        const statusMessage = document.getElementById('status-message');
+        const verificationCode = document.getElementById('verification-code');
+        const statusDetail = document.getElementById('status-detail');
+        const storageKey = 'room-indicator-pairing-request';
+        let pollTimer = null;
+
+        function defaultDeviceName() {
+            const ua = navigator.userAgent;
+            if (/iPhone/i.test(ua)) return 'iPhone';
+            if (/iPad/i.test(ua)) return 'iPad';
+            if (/Android/i.test(ua)) return 'Android端末';
+            return 'スマートフォン';
+        }
+
+        function tokenFromUrl() {
+            if (window.location.hash.length > 1) {
+                try {
+                    return decodeURIComponent(window.location.hash.slice(1));
+                } catch (_) {
+                    return '';
+                }
+            }
+
+            // 旧形式のQRコードを読み込んだ場合の互換処理。
+            const marker = '/pair/';
+            const index = window.location.pathname.indexOf(marker);
+            if (index < 0) return '';
+            try {
+                return decodeURIComponent(window.location.pathname.slice(index + marker.length));
+            } catch (_) {
+                return '';
+            }
+        }
+
+        let pairingToken = tokenFromUrl();
+        if (pairingToken) {
+            history.replaceState({}, '', '/pair');
+        }
+
+        deviceNameInput.value = defaultDeviceName();
+
+        function showError(message) {
+            pairStatus.hidden = false;
+            statusMessage.className = 'error';
+            statusMessage.textContent = message;
+            verificationCode.textContent = '';
+            statusDetail.textContent = 'ホストPCで新しいQRコードを発行して、もう一度お試しください。';
+        }
+
+        function showPending(request) {
+            form.hidden = true;
+            pairStatus.hidden = false;
+            statusMessage.className = '';
+            statusMessage.textContent = 'ホストの許可を待っています';
+            verificationCode.textContent = request.verification_code;
+            statusDetail.className = '';
+            statusDetail.textContent = 'ホストPCにも同じ番号が表示されていることを確認してください。';
+        }
+
+        async function submitPairing(event) {
+            event.preventDefault();
+            if (!pairingToken) {
+                showError('登録用QRコードが無効です');
+                return;
+            }
+            requestButton.disabled = true;
+            try {
+                const response = await fetch('/api/pairing/request', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: pairingToken,
+                        device_name: deviceNameInput.value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || '登録を開始できませんでした');
+                const saved = {
+                    request_id: data.request_id,
+                    request_secret: data.request_secret,
+                    verification_code: data.verification_code
+                };
+                sessionStorage.setItem(storageKey, JSON.stringify(saved));
+                pairingToken = '';
+                showPending(saved);
+                startPolling(saved);
+            } catch (error) {
+                showError(error.message);
+                requestButton.disabled = false;
+            }
+        }
+
+        function startPolling(request) {
+            if (pollTimer !== null) clearInterval(pollTimer);
+            pollPairingStatus(request);
+            pollTimer = setInterval(() => pollPairingStatus(request), 1500);
+        }
+
+        async function pollPairingStatus(pairingRequest) {
+            try {
+                const response = await fetch('/api/pairing/status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(pairingRequest)
+                });
+                const data = await response.json();
+                if (data.status === 'pending') return;
+
+                if (data.status === 'approved') {
+                    clearInterval(pollTimer);
+                    pollTimer = null;
+                    sessionStorage.removeItem(storageKey);
+                    statusMessage.className = 'success';
+                    statusMessage.textContent = '端末登録が完了しました';
+                    verificationCode.textContent = '✓';
+                    statusDetail.className = data.transport_secure ? '' : 'warning';
+                    statusDetail.textContent = data.transport_secure
+                        ? '映像画面へ移動します。'
+                        : 'HTTP接続のためCookieは暗号化されていません。映像画面へ移動します。';
+                    setTimeout(() => window.location.replace('/static/index.html'), 1200);
+                    return;
+                }
+
+                clearInterval(pollTimer);
+                pollTimer = null;
+                sessionStorage.removeItem(storageKey);
+                showError(data.message || '端末登録を完了できませんでした');
+            } catch (error) {
+                statusDetail.className = 'warning';
+                statusDetail.textContent = 'ホストPCへ再接続しています…';
+            }
+        }
+
+        form.addEventListener('submit', submitPairing);
+
+        try {
+            const saved = JSON.parse(sessionStorage.getItem(storageKey));
+            if (saved && saved.request_id && saved.request_secret) {
+                showPending(saved);
+                startPolling(saved);
+            } else if (!pairingToken) {
+                showError('登録用QRコードが無効です');
+                form.hidden = true;
+            }
+        } catch (_) {
+            sessionStorage.removeItem(storageKey);
+        }
+    </script>
+</body>
+</html>
