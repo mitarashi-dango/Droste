@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Room Indicator Stream</title>
+    <!-- iOS PWA Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Indicator">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <link rel="manifest" href="/static/manifest.json">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(22, 28, 45, 0.6);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --accent-color: #00f0ff;
+            --accent-glow: rgba(0, 240, 255, 0.4);
+            --warning-color: #ffaa00;
+            --warning-glow: rgba(255, 170, 0, 0.4);
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        html {
+            min-height: 100%;
+            background-color: var(--bg-color);
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            min-height: 100dvh;
+            overflow-x: hidden;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            position: relative;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* 背景の装飾グラデーション */
+        .bg-glow {
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, rgba(11, 15, 25, 0) 70%);
+            top: -100px;
+            right: -100px;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        header {
+            z-index: 10;
+            padding: 20px 24px;
+            padding-top: calc(20px + env(safe-area-inset-top));
+            background: linear-gradient(to bottom, rgba(11, 15, 25, 0.9) 0%, rgba(11, 15, 25, 0) 100%);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--accent-color);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--accent-color);
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+
+        .status-dot.warning {
+            background-color: var(--warning-color);
+            box-shadow: 0 0 8px var(--warning-color);
+        }
+
+        .status-text {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            background: var(--panel-bg);
+            padding: 4px 12px;
+            border-radius: 20px;
+            border: 1px solid var(--panel-border);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+
+        /* 映像表示コンテナ */
+        .viewer-container {
+            flex-grow: 1;
+            min-height: 260px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            z-index: 5;
+            position: relative;
+            overflow: hidden; /* はみ出した画像を隠す */
+            background-color: #000;
+        }
+
+        .stream-view {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 1px rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--panel-border);
+            background-color: #000;
+            transition: opacity 0.3s ease;
+            transform-origin: center center; /* ズームの起点 */
+            cursor: grab;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+
+        .stream-view:active {
+            cursor: grabbing;
+        }
+
+        /* ズームコントロール */
+        .zoom-controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 8px;
+            z-index: 20;
+        }
+
+        .zoom-btn {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: var(--text-color);
+            width: 40px;
+            height: 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            font-size: 1.2rem;
+            font-weight: 600;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            transition: all 0.2s;
+            outline: none;
+            user-select: none;
+        }
+
+        .zoom-btn:hover {
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+
+        /* 下部コントロールパネル */
+        .control-panel {
+            z-index: 10;
+            flex: 0 0 auto;
+            width: 100%;
+            padding: 24px;
+            padding-bottom: calc(24px + env(safe-area-inset-bottom));
+            background: linear-gradient(to top, rgba(11, 15, 25, 0.95) 80%, rgba(11, 15, 25, 0) 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+        }
+
+        /* 警告トースト風通知 */
+        .alert-banner {
+            background: rgba(255, 170, 0, 0.1);
+            border: 1px solid rgba(255, 170, 0, 0.2);
+            color: var(--warning-color);
+            padding: 10px 16px;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            opacity: 0;
+            transform: translateY(10px);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            max-width: 90%;
+            pointer-events: none;
+        }
+
+        .alert-banner.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* タブ型トグルスイッチ */
+        .toggle-container {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            padding: 4px;
+            border-radius: 99px;
+            display: flex;
+            position: relative;
+            width: 280px;
+            height: 48px;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .toggle-btn {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            z-index: 2;
+            transition: color 0.3s ease;
+            outline: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .toggle-btn.active {
+            color: #000000;
+        }
+
+        /* トグルのスライダー背景 */
+        .slider {
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            width: calc(50% - 4px);
+            height: calc(100% - 8px);
+            background: linear-gradient(135deg, #00f0ff 0%, #00a8ff 100%);
+            border-radius: 99px;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 1;
+            box-shadow: 0 2px 10px var(--accent-glow);
+        }
+
+        .toggle-container.full-mode .slider {
+            transform: translateX(100%);
+        }
+
+        /* デバッグ・テストパネル */
+        .debug-panel {
+            background: rgba(22, 28, 45, 0.85);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            padding: 20px;
+            width: 100%;
+            max-width: 480px;
+            display: none;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            margin-top: 10px;
+        }
+
+        .debug-panel.show {
+            display: flex;
+        }
+
+        .debug-row {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .debug-row label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .debug-row-inline {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .debug-input-group {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .debug-select, .debug-input {
+            flex-grow: 1;
+            min-width: 0;
+            background: rgba(11, 15, 25, 0.8);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: var(--text-color);
+            padding: 10px 12px;
+            font-family: inherit;
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .debug-select:focus, .debug-input:focus {
+            border-color: var(--accent-color);
+        }
+
+        .debug-btn {
+            background: linear-gradient(135deg, #00f0ff 0%, #00a8ff 100%);
+            border: none;
+            border-radius: 8px;
+            color: #000;
+            padding: 10px 16px;
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+            outline: none;
+            box-shadow: 0 4px 12px var(--accent-glow);
+        }
+
+        .debug-btn:hover {
+            opacity: 0.9;
+        }
+
+        .debug-btn:active {
+            transform: scale(0.98);
+        }
+
+        .debug-btn-secondary {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            color: var(--text-color);
+            box-shadow: none;
+        }
+
+        .debug-btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        /* 歯車設定ボタン */
+        .settings-btn {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: var(--text-muted);
+            outline: none;
+            flex: 0 0 40px;
+        }
+
+        .settings-btn:hover {
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+            box-shadow: 0 0 10px var(--accent-glow);
+        }
+
+        .settings-btn svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+            transition: transform 0.3s ease;
+        }
+
+        .settings-btn.active svg {
+            transform: rotate(45deg);
+        }
+
+        /* トグルスイッチスタイル */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider-round {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: .3s;
+            border-radius: 24px;
+            border: 1px solid var(--panel-border);
+        }
+
+        .slider-round:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 3px;
+            background-color: var(--text-muted);
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider-round {
+            background-color: var(--accent-glow);
+            border-color: var(--accent-color);
+        }
+
+        input:checked + .slider-round:before {
+            transform: translateX(24px);
+            background-color: var(--accent-color);
+        }
+
+        .controls-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            width: 100%;
+            max-width: 360px;
+            justify-content: center;
+        }
+
+        .controls-row.controls-hidden {
+            display: none;
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 14px 16px;
+                padding-top: calc(14px + env(safe-area-inset-top));
+                gap: 10px;
+            }
+
+            h1 {
+                font-size: 1rem;
+                white-space: nowrap;
+            }
+
+            .status-text {
+                font-size: 0.72rem;
+                padding: 4px 9px;
+                text-align: center;
+            }
+
+            .viewer-container {
+                flex: 0 0 52dvh;
+                min-height: 260px;
+                max-height: 520px;
+            }
+
+            .control-panel {
+                padding: 16px 12px;
+                padding-bottom: calc(16px + env(safe-area-inset-bottom));
+                gap: 12px;
+            }
+
+            .alert-banner {
+                max-width: 100%;
+            }
+
+            .debug-panel {
+                padding: 16px;
+                margin-top: 0;
+            }
+
+            .controls-row {
+                max-width: 360px;
+            }
+
+            .toggle-container {
+                width: auto;
+                min-width: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-glow"></div>
+
+    <header>
+        <h1><span class="status-dot" id="status-dot"></span>Room Indicator</h1>
+        <div class="status-text" id="status-text">読み込み中...</div>
+    </header>
+
+    <div class="viewer-container">
+        <!-- ズームコントロールボタン -->
+        <div class="zoom-controls">
+            <button class="zoom-btn" onclick="zoomIn()" title="拡大">+</button>
+            <button class="zoom-btn" onclick="zoomOut()" title="縮小">-</button>
+            <button class="zoom-btn" onclick="resetZoom()" title="ズームリセット">↺</button>
+        </div>
+        <!-- MJPEG ストリーム画像 -->
+        <img src="/stream" class="stream-view" id="stream-img" alt="Screen Stream" onerror="handleStreamError()">
+    </div>
+
+    <div class="control-panel">
+        <div class="alert-banner" id="alert-banner">
+            ⚠️ キャプチャ対象を設定してください
+        </div>
+
+        <!-- デバッグ設定パネル (折りたたみ式) -->
+        <div class="debug-panel" id="debug-panel">
+            <div class="debug-row">
+                <label for="win-select">キャプチャ対象ウィンドウの選択</label>
+                <div class="debug-input-group">
+                    <select id="win-select" class="debug-select" onchange="syncWindowInput()">
+                        <option value="">ウィンドウを検出中...</option>
+                    </select>
+                    <button class="debug-btn debug-btn-secondary" onclick="loadWindows()">更新</button>
+                </div>
+            </div>
+
+            <div class="debug-row">
+                <label for="win-input">ターゲットウィンドウ名 (部分一致)</label>
+                <input type="text" id="win-input" class="debug-input" placeholder="対象アプリのウィンドウ名">
+            </div>
+
+            <div class="debug-row">
+                <label>配信フレームレート (FPS): <span id="fps-val">5</span></label>
+                <input type="range" id="fps-range" min="1" max="30" value="5" class="debug-input" style="padding:0;" oninput="updateFpsValue(this.value)">
+            </div>
+
+            <div class="debug-row-inline" style="justify-content: space-between;">
+                <span style="font-size: 0.85rem; color: var(--text-muted);">ウィンドウが非アクティブでも前面に強制</span>
+                <label class="switch">
+                    <input type="checkbox" id="chk-force">
+                    <span class="slider-round"></span>
+                </label>
+            </div>
+
+            <button class="debug-btn" style="width: 100%; margin-top: 8px;" onclick="saveConfig()">設定を適用する</button>
+        </div>
+
+        <div class="controls-row controls-hidden" id="controls-row">
+            <div class="toggle-container" id="toggle-container" style="flex-grow: 1;">
+                <div class="slider"></div>
+                <button class="toggle-btn active" id="btn-app" onclick="setMode('app')">特定アプリ</button>
+                <button class="toggle-btn" id="btn-full" onclick="setMode('full')">全体画面</button>
+            </div>
+
+            <button class="settings-btn" id="btn-settings" onclick="toggleDebugPanel()" title="テスト設定を開く">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const alertBanner = document.getElementById('alert-banner');
+        const toggleContainer = document.getElementById('toggle-container');
+        const btnApp = document.getElementById('btn-app');
+        const btnFull = document.getElementById('btn-full');
+        const streamImg = document.getElementById('stream-img');
+        const controlsRow = document.getElementById('controls-row');
+
+        let currentMode = 'app';
+        let reconnectTimer = null;
+
+        // モード変更の送信
+        async function setMode(mode) {
+            try {
+                const response = await fetch('/api/mode', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ mode: mode })
+                });
+                const data = await response.json();
+                if (data.result === 'success') {
+                    updateUI(data);
+                }
+            } catch (error) {
+                console.error('Error setting mode:', error);
+            }
+        }
+
+        // 定期的なステータスチェック（2秒ごと）
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/mode');
+                const data = await response.json();
+                updateUI(data);
+            } catch (error) {
+                console.error('Error fetching status:', error);
+                statusText.textContent = '接続エラー';
+                statusDot.style.backgroundColor = '#ef4444';
+                statusDot.style.boxShadow = '0 0 8px #ef4444';
+            }
+        }
+
+        // UI表示の更新
+        function updateUI(state) {
+            const mode = state.mode;
+            currentMode = mode;
+
+            const canConfigure = state.can_configure === true;
+            controlsRow.classList.toggle('controls-hidden', !canConfigure);
+            if (!canConfigure) {
+                debugPanel.classList.remove('show');
+                btnSettings.classList.remove('active');
+            }
+
+            // ボタン表示の切り替え
+            if (mode === 'app') {
+                toggleContainer.classList.remove('full-mode');
+                btnApp.classList.add('active');
+                btnFull.classList.remove('active');
+            } else {
+                toggleContainer.classList.add('full-mode');
+                btnApp.classList.remove('active');
+                btnFull.classList.add('active');
+            }
+
+            // ステータス表示
+            statusDot.className = 'status-dot';
+            alertBanner.classList.remove('show');
+
+            switch (state.status) {
+                case 'streaming_app':
+                    statusText.textContent = '特定アプリ配信中';
+                    break;
+                case 'streaming_full':
+                    statusText.textContent = '全体画面配信中';
+                    break;
+                case 'target_not_configured':
+                    statusText.textContent = '対象アプリ未設定';
+                    alertBanner.textContent = '⚠️ 設定からキャプチャ対象を選んでください';
+                    statusDot.className = 'status-dot warning';
+                    alertBanner.classList.add('show');
+                    break;
+                case 'target_not_found':
+                    statusText.textContent = '対象アプリ待機中';
+                    alertBanner.textContent = '⚠️ 設定したアプリが見つかりません。全画面には切り替えません';
+                    statusDot.className = 'status-dot warning';
+                    alertBanner.classList.add('show');
+                    break;
+                case 'target_minimized':
+                    statusText.textContent = '対象アプリ最小化中';
+                    alertBanner.textContent = '⚠️ 配信を再開するには対象アプリを元のサイズへ戻してください';
+                    statusDot.className = 'status-dot warning';
+                    alertBanner.classList.add('show');
+                    break;
+                case 'local_fullscreen_blocked':
+                    statusText.textContent = '自己撮影を停止中';
+                    alertBanner.textContent = '⚠️ 無限廊下防止のため、このPCでは全画面配信を表示できません';
+                    statusDot.className = 'status-dot warning';
+                    alertBanner.classList.add('show');
+                    break;
+                case 'capture_failed':
+                    statusText.textContent = 'キャプチャ失敗';
+                    alertBanner.textContent = '⚠️ 画面の取得に失敗しました';
+                    statusDot.className = 'status-dot warning';
+                    alertBanner.classList.add('show');
+                    break;
+                case 'idle_no_clients':
+                    statusText.textContent = '閲覧待機中';
+                    break;
+                default:
+                    statusText.textContent = '準備中...';
+            }
+        }
+
+        // ストリームエラー時の自動再接続処理
+        function handleStreamError() {
+            if (reconnectTimer !== null) return;
+            console.log('Stream error, reconnecting...');
+            statusText.textContent = '再接続中...';
+            // 少し待ってキャッシュ対策のクエリパラメータを付与してリロード
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                streamImg.src = '/stream?t=' + new Date().getTime();
+            }, 1000);
+        }
+
+        // PWAで起動された場合等のタッチ操作対策（ダブルタップズーム防止など）
+        document.addEventListener('touchstart', (e) => {
+            if (e.touches.length > 1) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+
+        const debugPanel = document.getElementById('debug-panel');
+        const btnSettings = document.getElementById('btn-settings');
+        const winSelect = document.getElementById('win-select');
+        const winInput = document.getElementById('win-input');
+        const fpsRange = document.getElementById('fps-range');
+        const fpsVal = document.getElementById('fps-val');
+        const chkForce = document.getElementById('chk-force');
+
+        // デバッグパネルの表示切り替え
+        async function toggleDebugPanel() {
+            const isShow = debugPanel.classList.toggle('show');
+            btnSettings.classList.toggle('active', isShow);
+            if (isShow) {
+                await loadWindows();
+                await loadConfigData();
+            }
+        }
+
+        // FPS値のテキスト更新
+        function updateFpsValue(val) {
+            fpsVal.textContent = val;
+        }
+
+        // ウィンドウ一覧をAPIから取得
+        async function loadWindows() {
+            try {
+                winSelect.innerHTML = '<option value="">ウィンドウを検出中...</option>';
+                const response = await fetch('/api/windows');
+                const windows = await response.json();
+
+                winSelect.innerHTML = '<option value="">-- ウィンドウを選択してください --</option>';
+                windows.forEach(win => {
+                    const option = document.createElement('option');
+                    option.value = win;
+                    option.textContent = win;
+                    winSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading windows:', error);
+                winSelect.innerHTML = '<option value="">ウィンドウの取得に失敗しました</option>';
+            }
+        }
+
+        // ウィンドウ選択時の入力欄同期
+        function syncWindowInput() {
+            if (winSelect.value) {
+                winInput.value = winSelect.value;
+            }
+        }
+
+        // 現在の設定を取得して反映
+        async function loadConfigData() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+
+                winInput.value = config.target_window_title || '';
+                fpsRange.value = config.fps || 5;
+                fpsVal.textContent = config.fps || 5;
+                chkForce.checked = config.force_foreground || false;
+
+                // プルダウンの選択状態を更新
+                if (winSelect.options) {
+                    for (let i = 0; i < winSelect.options.length; i++) {
+                        if (winSelect.options[i].value === config.target_window_title) {
+                            winSelect.selectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading config:', error);
+            }
+        }
+
+        // 設定の保存
+        async function saveConfig() {
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        target_window_title: winInput.value,
+                        fps: parseInt(fpsRange.value),
+                        force_foreground: chkForce.checked
+                    })
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    alert('設定を適用しました！');
+                    checkStatus();
+                } else {
+                    alert('設定の保存に失敗しました: ' + data.message);
+                }
+            } catch (error) {
+                console.error('Error saving config:', error);
+                alert('通信エラーが発生しました');
+            }
+        }
+
+        // --- ズーム＆パン操作の実装 ---
+        const viewerContainer = document.querySelector('.viewer-container');
+        let scale = 1;
+        let pointX = 0;
+        let pointY = 0;
+        let startX = 0;
+        let startY = 0;
+        let isDragging = false;
+
+        // タッチ操作（ピンチ）用の変数
+        let initialDistance = 0;
+        let initialScale = 1;
+
+        // transformの更新
+        function updateTransform() {
+            if (scale < 1) scale = 1;
+            if (scale > 10) scale = 10;
+            streamImg.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`;
+        }
+
+        // ズームボタン操作
+        window.zoomIn = function() {
+            scale = Math.min(10, scale + 0.5);
+            updateTransform();
+        }
+
+        window.zoomOut = function() {
+            scale = Math.max(1, scale - 0.5);
+            if (scale === 1) {
+                pointX = 0;
+                pointY = 0;
+            }
+            updateTransform();
+        }
+
+        window.resetZoom = function() {
+            scale = 1;
+            pointX = 0;
+            pointY = 0;
+            updateTransform();
+        }
+
+        // --- マウスによるドラッグ＆ホイールズーム ---
+        viewerContainer.addEventListener('mousedown', (e) => {
+            if (e.target.classList.contains('zoom-btn')) return; // ボタン上はドラッグ無効
+            if (e.button !== 0) return; // 左クリックのみ
+            e.preventDefault();
+            isDragging = true;
+            startX = e.clientX - pointX;
+            startY = e.clientY - pointY;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            pointX = e.clientX - startX;
+            pointY = e.clientY - startY;
+            updateTransform();
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        viewerContainer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const xs = (e.clientX - pointX) / scale;
+            const ys = (e.clientY - pointY) / scale;
+            const delta = -e.deltaY;
+
+            if (delta > 0) {
+                scale = Math.min(10, scale + 0.1);
+            } else {
+                scale = Math.max(1, scale - 0.1);
+            }
+
+            if (scale === 1) {
+                pointX = 0;
+                pointY = 0;
+            } else {
+                pointX = e.clientX - xs * scale;
+                pointY = e.clientY - ys * scale;
+            }
+            updateTransform();
+        }, { passive: false });
+
+        // --- タッチ操作（スマホ）によるドラッグ＆ピンチズーム ---
+        viewerContainer.addEventListener('touchstart', (e) => {
+            if (e.target.classList.contains('zoom-btn')) return; // ボタン上はドラッグ無効
+            if (e.touches.length === 1) {
+                // 等倍ではページスクロールを優先し、拡大中だけ画像をパンする。
+                isDragging = scale > 1;
+                if (isDragging) {
+                    startX = e.touches[0].clientX - pointX;
+                    startY = e.touches[0].clientY - pointY;
+                }
+            } else if (e.touches.length === 2) {
+                isDragging = false;
+                initialDistance = getDistance(e.touches[0], e.touches[1]);
+                initialScale = scale;
+            }
+        });
+
+        viewerContainer.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 1 && isDragging) {
+                e.preventDefault();
+                pointX = e.touches[0].clientX - startX;
+                pointY = e.touches[0].clientY - startY;
+                updateTransform();
+            } else if (e.touches.length === 2) {
+                e.preventDefault();
+                const distance = getDistance(e.touches[0], e.touches[1]);
+                const factor = distance / initialDistance;
+                scale = Math.min(10, Math.max(1, initialScale * factor));
+                if (scale === 1) {
+                    pointX = 0;
+                    pointY = 0;
+                }
+                updateTransform();
+            }
+        }, { passive: false });
+
+        viewerContainer.addEventListener('touchend', (e) => {
+            isDragging = false;
+            if (e.touches.length > 0 && scale > 1) {
+                isDragging = true;
+                startX = e.touches[0].clientX - pointX;
+                startY = e.touches[0].clientY - pointY;
+            }
+        });
+
+        function getDistance(t1, t2) {
+            return Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        }
+
+        // 初期化
+        checkStatus();
+        setInterval(checkStatus, 2000);
+
+        // サービスワーカーの登録
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js', { updateViaCache: 'none' })
+                    .then(reg => {
+                        reg.update();
+                        console.log('ServiceWorker registered', reg);
+                    })
+                    .catch(err => console.error('ServiceWorker registration failed', err));
+            });
+        }
+    </script>
+</body>
+</html>
