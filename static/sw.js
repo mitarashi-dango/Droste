@@ -1,4 +1,4 @@
-const CACHE_NAME = 'indicator-stream-v6';
+const CACHE_NAME = 'indicator-stream-v7';
 const ASSETS = [
   '/static/index.html',
   '/static/pair.html',
