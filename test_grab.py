@@ -81,4 +81,5 @@ def capture_desktop_win32():
             except Exception:
                 pass
 
-capture_desktop_win32()
+if __name__ == "__main__":
+    capture_desktop_win32()

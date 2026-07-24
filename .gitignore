@@ -1,6 +1,10 @@
 __pycache__/
+.venv/
+dist/
+vendor/*.exe
 *.py[cod]
 config.json
 devices.json
 devices.json.tmp
+tls/
 *.log

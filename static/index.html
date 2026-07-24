@@ -221,6 +221,35 @@
             transform: translateY(0);
         }
 
+        .install-card {
+            width: min(100%, 520px);
+            padding: 12px 14px;
+            border: 1px solid rgba(0, 240, 255, 0.28);
+            border-radius: 12px;
+            background: rgba(0, 240, 255, 0.08);
+            color: var(--text-color);
+            text-align: center;
+        }
+
+        .install-card p {
+            margin: 0 0 10px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+
+        .install-card button {
+            width: 100%;
+            padding: 11px 14px;
+            border: 0;
+            border-radius: 10px;
+            background: linear-gradient(135deg, var(--accent-color), #00a8ff);
+            color: #001114;
+            font: inherit;
+            font-weight: 750;
+            cursor: pointer;
+        }
+
         /* タブ型トグルスイッチ */
         .toggle-container {
             background: var(--panel-bg);
@@ -438,6 +467,16 @@
 
         .pairing-warning {
             color: var(--warning-color);
+        }
+
+        .tls-fingerprint {
+            width: 100%;
+            overflow-wrap: anywhere;
+            color: var(--text-muted);
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            font-size: 0.62rem;
+            line-height: 1.45;
+            text-align: center;
         }
 
         .device-list {
@@ -661,6 +700,11 @@
             ⚠️ キャプチャ対象を設定してください
         </div>
 
+        <div class="install-card" id="install-card" hidden>
+            <p id="install-message">ホーム画面に追加すると、次回からアイコンを1回タップするだけで映像を開けます。</p>
+            <button type="button" id="install-button">ホーム画面に追加</button>
+        </div>
+
         <!-- デバッグ設定パネル (折りたたみ式) -->
         <div class="debug-panel" id="debug-panel">
             <div class="debug-row">
@@ -692,6 +736,18 @@
             </div>
 
             <button class="debug-btn" style="width: 100%; margin-top: 8px;" onclick="saveConfig()">設定を適用する</button>
+
+            <section class="pairing-section" aria-labelledby="tls-heading">
+                <div class="pairing-title-row">
+                    <h2 id="tls-heading">スマホのHTTPS初期設定</h2>
+                </div>
+                <div class="pairing-box" id="tls-setup-box">
+                    <img class="pairing-qr" id="tls-setup-qr" alt="HTTPS証明書初期設定用QRコード" hidden>
+                    <p class="pairing-note" id="tls-setup-message">HTTPSの準備状況を確認しています…</p>
+                    <div class="pairing-url" id="tls-setup-url"></div>
+                    <div class="tls-fingerprint" id="tls-fingerprint"></div>
+                </div>
+            </section>
 
             <section class="pairing-section" aria-labelledby="pairing-heading">
                 <div class="pairing-title-row">
@@ -741,11 +797,70 @@
         const btnFull = document.getElementById('btn-full');
         const streamImg = document.getElementById('stream-img');
         const controlsRow = document.getElementById('controls-row');
+        const installCard = document.getElementById('install-card');
+        const installButton = document.getElementById('install-button');
+        const installMessage = document.getElementById('install-message');
 
         let currentMode = 'app';
         let reconnectTimer = null;
         let requiresPairing = false;
         let pairingPollTimer = null;
+        let deferredInstallPrompt = null;
+        let isRegisteredGuest = false;
+
+        function isStandaloneApp() {
+            return window.matchMedia('(display-mode: standalone)').matches
+                || window.navigator.standalone === true;
+        }
+
+        function isIosDevice() {
+            return /iphone|ipad|ipod/i.test(navigator.userAgent);
+        }
+
+        function updateInstallCard() {
+            if (!isRegisteredGuest || isStandaloneApp()) {
+                installCard.hidden = true;
+                return;
+            }
+
+            const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+            if (!isMobile) {
+                installCard.hidden = true;
+                return;
+            }
+
+            installCard.hidden = false;
+            if (deferredInstallPrompt) {
+                installMessage.textContent = 'ホーム画面に追加すると、次回からアイコンを1回タップするだけで映像を開けます。';
+                installButton.textContent = 'ホーム画面に追加';
+                installButton.hidden = false;
+            } else if (isIosDevice()) {
+                installMessage.textContent = '次回からワンタップで開くには、Safariの共有ボタンから「ホーム画面に追加」を選んでください。';
+                installButton.hidden = true;
+            } else {
+                installMessage.textContent = 'ブラウザのメニューから「ホーム画面に追加」または「アプリをインストール」を選んでください。';
+                installButton.hidden = true;
+            }
+        }
+
+        window.addEventListener('beforeinstallprompt', (event) => {
+            event.preventDefault();
+            deferredInstallPrompt = event;
+            updateInstallCard();
+        });
+
+        window.addEventListener('appinstalled', () => {
+            deferredInstallPrompt = null;
+            installCard.hidden = true;
+        });
+
+        installButton.addEventListener('click', async () => {
+            if (!deferredInstallPrompt) return;
+            deferredInstallPrompt.prompt();
+            await deferredInstallPrompt.userChoice;
+            deferredInstallPrompt = null;
+            updateInstallCard();
+        });
 
         // モード変更の送信
         async function setMode(mode) {
@@ -779,6 +894,8 @@
                 }
                 const data = await response.json();
                 requiresPairing = false;
+                isRegisteredGuest = data.can_configure !== true && Boolean(data.device);
+                updateInstallCard();
                 updateUI(data);
             } catch (error) {
                 console.error('Error fetching status:', error);
@@ -894,9 +1011,15 @@
         const pairingTransportWarning = document.getElementById('pairing-transport-warning');
         const pendingDeviceList = document.getElementById('pending-device-list');
         const registeredDeviceList = document.getElementById('registered-device-list');
+        const tlsSetupQr = document.getElementById('tls-setup-qr');
+        const tlsSetupMessage = document.getElementById('tls-setup-message');
+        const tlsSetupUrl = document.getElementById('tls-setup-url');
+        const tlsFingerprint = document.getElementById('tls-fingerprint');
 
         function showPairingRequired() {
             requiresPairing = true;
+            isRegisteredGuest = false;
+            installCard.hidden = true;
             if (reconnectTimer !== null) {
                 clearTimeout(reconnectTimer);
                 reconnectTimer = null;
@@ -916,6 +1039,7 @@
             if (isShow) {
                 await loadWindows();
                 await loadConfigData();
+                await loadTlsStatus();
                 await loadDevices();
                 startPairingPolling();
             } else {
@@ -933,6 +1057,26 @@
             if (pairingPollTimer !== null) {
                 clearInterval(pairingPollTimer);
                 pairingPollTimer = null;
+            }
+        }
+
+        async function loadTlsStatus() {
+            try {
+                const response = await fetch('/api/tls/status');
+                const data = await response.json();
+                if (!response.ok || data.tls_enabled !== true) {
+                    throw new Error(data.message || 'HTTPSが無効です');
+                }
+                tlsSetupQr.src = data.setup_qr_data_url;
+                tlsSetupQr.hidden = false;
+                tlsSetupMessage.textContent = 'スマホごとに最初の1回だけ、このQRコードから証明書を導入してください。その後「端末を追加」を行います。';
+                tlsSetupUrl.textContent = data.setup_url;
+                tlsFingerprint.textContent = `証明書 SHA-256: ${data.ca_fingerprint_sha256}`;
+            } catch (error) {
+                tlsSetupQr.hidden = true;
+                tlsSetupMessage.textContent = `HTTPSの準備を確認できません: ${error.message}`;
+                tlsSetupUrl.textContent = '';
+                tlsFingerprint.textContent = '';
             }
         }
 

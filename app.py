@@ -11,15 +11,22 @@ import base64
 import hashlib
 import secrets
 import socket
+import ipaddress
+from collections import deque
 from ctypes import wintypes
-from flask import Flask, Response, jsonify, request, redirect
+from urllib.parse import urlsplit
+from flask import Flask, Response, jsonify, request, redirect, send_file
+from cheroot.ssl.builtin import BuiltinSSLAdapter
+from cheroot.wsgi import Server as CherootServer
 import qrcode
+from tls_utils import ensure_local_tls_assets
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("room_indicator")
+logging.getLogger("cheroot.access").setLevel(logging.WARNING)
 
 CAPTURE_ERROR_LOG_INTERVAL = 30.0
 _capture_error_times = {}
@@ -61,29 +68,53 @@ from PIL import Image, ImageGrab, ImageDraw
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
 
 # 設定ファイルのパス
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
-DEVICE_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), 'devices.json')
+BASE_DIRECTORY = os.path.dirname(__file__)
+CONFIG_PATH = os.environ.get(
+    "ROOM_INDICATOR_CONFIG_PATH",
+    os.path.join(BASE_DIRECTORY, "config.json"),
+)
+DEVICE_REGISTRY_PATH = os.environ.get(
+    "ROOM_INDICATOR_DEVICE_REGISTRY_PATH",
+    os.path.join(BASE_DIRECTORY, "devices.json"),
+)
+TLS_BASE_DIRECTORY = os.environ.get(
+    "ROOM_INDICATOR_TLS_DIRECTORY",
+    BASE_DIRECTORY,
+)
 
 DEVICE_COOKIE_NAME = "room_indicator_device"
 DEVICE_COOKIE_MAX_AGE = 180 * 24 * 60 * 60
 PAIRING_TTL_SECONDS = 120
 PAIRING_CLAIM_TTL_SECONDS = 300
+MAX_STREAMS_PER_DEVICE = 2
+MAX_TOTAL_GUEST_STREAMS = 16
 
 _device_lock = threading.RLock()
 _devices = {}
 _pairing_lock = threading.RLock()
 _pairing_sessions = {}
 _pairing_requests = {}
+_tls_asset_lock = threading.RLock()
+_tls_assets = None
+_rate_limit_lock = threading.RLock()
+_rate_limit_events = {}
+_guest_stream_lock = threading.RLock()
+_guest_stream_counts = {}
+_guest_stream_total = 0
 
 DEFAULT_CONFIG = {
     "target_window_title": "",
     "port": 5000,
     "fps": 5,
     "force_foreground": False,
-    "auto_open_browser": False,
+    "auto_open_browser": True,
     "pairing_base_url": "",
+    "lan_ip": "",
+    "tls_enabled": True,
+    "https_port": 5443,
 }
 
 SELF_WINDOW_MARKERS = ("Room Indicator Stream",)
@@ -107,10 +138,40 @@ def load_config():
     except (TypeError, ValueError):
         config["fps"] = 5
     config["force_foreground"] = bool(config.get("force_foreground", False))
-    config["auto_open_browser"] = bool(config.get("auto_open_browser", False))
+    config["auto_open_browser"] = bool(config.get("auto_open_browser", True))
+    config["tls_enabled"] = bool(config.get("tls_enabled", True))
+    try:
+        config["port"] = max(1, min(65535, int(config.get("port", 5000))))
+    except (TypeError, ValueError):
+        config["port"] = 5000
+    try:
+        config["https_port"] = max(1, min(65535, int(config.get("https_port", 5443))))
+    except (TypeError, ValueError):
+        config["https_port"] = 5443
+    if config["https_port"] == config["port"]:
+        config["https_port"] = 5443 if config["port"] != 5443 else 5444
     config["pairing_base_url"] = str(
         config.get("pairing_base_url", "") or ""
     ).strip().rstrip("/")
+    if config["pairing_base_url"]:
+        try:
+            parsed_base_url = urlsplit(config["pairing_base_url"])
+            if parsed_base_url.scheme.lower() != "https" or not parsed_base_url.hostname:
+                config["pairing_base_url"] = ""
+        except ValueError:
+            config["pairing_base_url"] = ""
+    config["lan_ip"] = str(config.get("lan_ip", "") or "").strip()
+    if config["lan_ip"]:
+        try:
+            configured_address = ipaddress.ip_address(config["lan_ip"])
+            if (
+                configured_address.version != 4
+                or configured_address.is_unspecified
+                or configured_address.is_multicast
+            ):
+                config["lan_ip"] = ""
+        except ValueError:
+            config["lan_ip"] = ""
     return config
 
 
@@ -176,7 +237,10 @@ def get_authenticated_device():
     now = time.time()
     with _device_lock:
         for device in _devices.values():
-            if device.get("token_hash") != token_hash:
+            if not secrets.compare_digest(
+                str(device.get("token_hash", "")),
+                token_hash,
+            ):
                 continue
             if device.get("revoked", False):
                 return None
@@ -194,32 +258,81 @@ def get_authenticated_device():
 
 
 def get_lan_ip():
+    configured_ip = load_config().get("lan_ip", "")
+    if configured_ip:
+        return configured_ip
+
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         probe.connect(("8.8.8.8", 80))
-        return probe.getsockname()[0]
+        detected_ip = probe.getsockname()[0]
+        if detected_ip and not ipaddress.ip_address(detected_ip).is_loopback:
+            return detected_ip
     except Exception:
-        return "127.0.0.1"
+        pass
     finally:
         probe.close()
 
+    try:
+        for detected_ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            address = ipaddress.ip_address(detected_ip)
+            if address.version == 4 and not address.is_loopback:
+                return detected_ip
+    except (OSError, ValueError):
+        pass
+    return "127.0.0.1"
 
-def build_pairing_url(token):
+
+def guest_base_url():
     config = load_config()
     configured_base_url = config.get("pairing_base_url", "")
     if configured_base_url:
-        return f"{configured_base_url.rstrip('/')}/pair#{token}"
+        return configured_base_url.rstrip("/")
+
+    if config.get("tls_enabled", True):
+        return f"https://{get_lan_ip()}:{config['https_port']}"
 
     scheme = "https" if request.is_secure else "http"
     port = request.environ.get("SERVER_PORT") or config.get("port", 5000)
-    return f"{scheme}://{get_lan_ip()}:{port}/pair#{token}"
+    return f"{scheme}://{get_lan_ip()}:{port}"
+
+
+def build_pairing_url(token):
+    return f"{guest_base_url()}/pair#{token}"
+
+
+def build_tls_setup_url():
+    return f"{guest_base_url()}/setup"
+
+
+def make_qr_data_url(value):
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=4,
+    )
+    qr.add_data(value)
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    with io.BytesIO() as output:
+        qr_image.save(output, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def get_tls_assets():
+    global _tls_assets
+    with _tls_asset_lock:
+        if _tls_assets is None:
+            lan_ip = get_lan_ip()
+            _tls_assets = ensure_local_tls_assets(TLS_BASE_DIRECTORY, lan_ip)
+        return _tls_assets
 
 
 def is_secure_pairing_transport():
     if request.is_secure:
         return True
-    configured_base_url = str(load_config().get("pairing_base_url", "")).strip()
-    return configured_base_url.lower().startswith("https://")
+    return guest_base_url().lower().startswith("https://")
 
 
 def cleanup_pairings_locked():
@@ -585,8 +698,181 @@ class ScreenStreamer:
 streamer = ScreenStreamer()
 
 
+def request_hostname():
+    try:
+        return (urlsplit(f"//{request.host}").hostname or "").rstrip(".").lower()
+    except ValueError:
+        return ""
+
+
+def request_server_port():
+    try:
+        return int(request.environ.get("SERVER_PORT", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_loopback_address(value):
+    try:
+        return ipaddress.ip_address(str(value or "")).is_loopback
+    except ValueError:
+        return False
+
+
+def is_loopback_hostname(value):
+    return value == "localhost" or is_loopback_address(value)
+
+
 def is_local_request():
-    return (request.remote_addr or "") in {"127.0.0.1", "::1"}
+    config = load_config()
+    return (
+        not request.is_secure
+        and is_loopback_address(request.remote_addr)
+        and is_loopback_hostname(request_hostname())
+        and request_server_port() == config["port"]
+    )
+
+
+def allowed_guest_hostnames():
+    allowed = {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        get_lan_ip().lower(),
+    }
+    hostname = socket.gethostname().strip().rstrip(".").lower()
+    if hostname:
+        allowed.add(hostname)
+        allowed.add(f"{hostname}.local")
+
+    configured_base_url = load_config().get("pairing_base_url", "")
+    if configured_base_url:
+        try:
+            configured_hostname = (
+                urlsplit(configured_base_url).hostname or ""
+            ).rstrip(".").lower()
+            if configured_hostname:
+                allowed.add(configured_hostname)
+        except ValueError:
+            pass
+    return allowed
+
+
+def same_origin_request():
+    origin = str(request.headers.get("Origin", "") or "").strip()
+    fetch_site = str(request.headers.get("Sec-Fetch-Site", "") or "").lower()
+    if fetch_site in {"cross-site", "same-site"}:
+        return False
+    if not origin:
+        return True
+    try:
+        parsed = urlsplit(origin)
+        origin_hostname = (parsed.hostname or "").rstrip(".").lower()
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except (ValueError, TypeError):
+        return False
+    return (
+        parsed.scheme.lower() == request.scheme.lower()
+        and origin_hostname == request_hostname()
+        and origin_port == request_server_port()
+    )
+
+
+def security_error(message, status_code):
+    response = jsonify({"status": "error", "message": message})
+    response.status_code = status_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.before_request
+def enforce_request_boundary():
+    config = load_config()
+    server_port = request_server_port()
+    hostname = request_hostname()
+
+    if server_port == config["port"] and is_loopback_address(request.remote_addr):
+        if not is_loopback_hostname(hostname):
+            return security_error("Invalid management host", 421)
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and not same_origin_request():
+            return security_error("Cross-origin management request was blocked", 403)
+        return None
+
+    if hostname not in allowed_guest_hostnames():
+        return security_error("Invalid guest host", 421)
+    return None
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    )
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+        "form-action 'self'; object-src 'none'; "
+        "img-src 'self' data: blob:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "connect-src 'self'; manifest-src 'self'; worker-src 'self'",
+    )
+    if request.is_secure:
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000",
+        )
+    if request.path.startswith("/api/") or request.path == "/stream":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def rate_limit_response(bucket, limit, window_seconds):
+    now = time.monotonic()
+    remote_address = str(request.remote_addr or "unknown")
+    key = (bucket, remote_address)
+    with _rate_limit_lock:
+        events = _rate_limit_events.setdefault(key, deque())
+        cutoff = now - window_seconds
+        while events and events[0] <= cutoff:
+            events.popleft()
+        if len(events) >= limit:
+            retry_after = max(1, int(window_seconds - (now - events[0])))
+            response = security_error("Too many requests", 429)
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        events.append(now)
+    return None
+
+
+def acquire_guest_stream(device_id):
+    global _guest_stream_total
+    with _guest_stream_lock:
+        device_count = _guest_stream_counts.get(device_id, 0)
+        if (
+            device_count >= MAX_STREAMS_PER_DEVICE
+            or _guest_stream_total >= MAX_TOTAL_GUEST_STREAMS
+        ):
+            return False
+        _guest_stream_counts[device_id] = device_count + 1
+        _guest_stream_total += 1
+        return True
+
+
+def release_guest_stream(device_id):
+    global _guest_stream_total
+    with _guest_stream_lock:
+        device_count = _guest_stream_counts.get(device_id, 0)
+        if device_count <= 1:
+            _guest_stream_counts.pop(device_id, None)
+        else:
+            _guest_stream_counts[device_id] = device_count - 1
+        _guest_stream_total = max(0, _guest_stream_total - 1)
 
 
 def authentication_required_response():
@@ -620,6 +906,80 @@ def pairing_page(token=None):
     return response
 
 
+@app.route('/setup')
+def tls_setup_page():
+    response = app.send_static_file("setup.html")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.route('/tls/room-indicator-ca.crt')
+def download_tls_ca():
+    limited = rate_limit_response("tls-download", 10, 60)
+    if limited:
+        return limited
+    assets = get_tls_assets()
+    response = send_file(
+        assets["ca_der"],
+        mimetype="application/x-x509-ca-cert",
+        as_attachment=True,
+        download_name="room-indicator-ca.crt",
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route('/tls/room-indicator-ca.mobileconfig')
+def download_tls_mobileconfig():
+    limited = rate_limit_response("tls-download", 10, 60)
+    if limited:
+        return limited
+    assets = get_tls_assets()
+    response = send_file(
+        assets["mobileconfig"],
+        mimetype="application/x-apple-aspen-config",
+        as_attachment=True,
+        download_name="room-indicator-ca.mobileconfig",
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route('/api/tls/status')
+def api_tls_status():
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+    config = load_config()
+    if not config.get("tls_enabled", True):
+        return jsonify({"status": "disabled", "tls_enabled": False})
+    assets = get_tls_assets()
+    setup_url = build_tls_setup_url()
+    return jsonify({
+        "status": "success",
+        "tls_enabled": True,
+        "https_port": config["https_port"],
+        "setup_url": setup_url,
+        "setup_qr_data_url": make_qr_data_url(setup_url),
+        "ca_fingerprint_sha256": assets["ca_fingerprint_sha256"],
+    })
+
+
+@app.route('/api/tls/fingerprint')
+def api_tls_fingerprint():
+    limited = rate_limit_response("tls-fingerprint", 30, 60)
+    if limited:
+        return limited
+    assets = get_tls_assets()
+    return jsonify({
+        "status": "success",
+        "ca_fingerprint_sha256": assets["ca_fingerprint_sha256"],
+    })
+
+
 @app.route('/api/auth/status')
 def api_auth_status():
     if is_local_request():
@@ -645,18 +1005,7 @@ def api_pairing_start():
     expires_at = time.time() + PAIRING_TTL_SECONDS
     pairing_url = build_pairing_url(token)
 
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=8,
-        border=4,
-    )
-    qr.add_data(pairing_url)
-    qr.make(fit=True)
-    qr_image = qr.make_image(fill_color="black", back_color="white")
-    with io.BytesIO() as output:
-        qr_image.save(output, format="PNG")
-        qr_data_url = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+    qr_data_url = make_qr_data_url(pairing_url)
 
     with _pairing_lock:
         cleanup_pairings_locked()
@@ -684,6 +1033,9 @@ def api_pairing_start():
 
 @app.route('/api/pairing/request', methods=['POST'])
 def api_pairing_request():
+    limited = rate_limit_response("pairing-request", 10, 60)
+    if limited:
+        return limited
     data = request.get_json(silent=True) or {}
     token = str(data.get("token", "")).strip()
     if not token:
@@ -821,6 +1173,9 @@ def api_pairing_reject(request_id):
 
 @app.route('/api/pairing/status', methods=['POST'])
 def api_pairing_status():
+    limited = rate_limit_response("pairing-status", 90, 60)
+    if limited:
+        return limited
     data = request.get_json(silent=True) or {}
     request_id = str(data.get("request_id", "")).strip()
     request_secret = str(data.get("request_secret", "")).strip()
@@ -909,8 +1264,12 @@ def api_device_delete(device_id):
 @app.route('/stream')
 def stream():
     is_local = is_local_request()
-    if not is_local and get_authenticated_device() is None:
-        return authentication_required_response()
+    device = None if is_local else get_authenticated_device()
+    if not is_local:
+        if device is None:
+            return authentication_required_response()
+        if not acquire_guest_stream(device["id"]):
+            return security_error("Too many active streams for this device", 429)
 
     def gen():
         last_frame = None
@@ -929,6 +1288,8 @@ def stream():
                 time.sleep(0.03) # クライアント配信レートの調整
         finally:
             streamer.remove_client(is_local=is_local)
+            if device is not None:
+                release_guest_stream(device["id"])
     return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/mode', methods=['GET', 'POST'])
@@ -997,15 +1358,17 @@ def api_config():
         return jsonify(load_config())
 
 if __name__ == '__main__':
-    # サーバーの起動
     config = load_config()
     port = config.get("port", 5000)
+    https_port = config.get("https_port", 5443)
+    tls_enabled = config.get("tls_enabled", True)
 
-    # ストリーマの開始
     streamer.start()
 
-    # 同じPCで全画面配信を開くと自己撮影になるため、自動起動は既定で無効。
-    if config.get("auto_open_browser", False):
+    if (
+        config.get("auto_open_browser", False)
+        and os.environ.get("ROOM_INDICATOR_NO_BROWSER") != "1"
+    ):
         def open_browser():
             time.sleep(1.0)
             try:
@@ -1015,14 +1378,51 @@ if __name__ == '__main__':
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-    # LAN内IPアドレスの自動取得
     local_ip = get_lan_ip()
+    if tls_enabled:
+        assets = get_tls_assets()
+        host_server = CherootServer(("127.0.0.1", port), app, numthreads=12)
+        guest_server = CherootServer((local_ip, https_port), app, numthreads=32)
+        guest_server.ssl_adapter = BuiltinSSLAdapter(
+            assets["server_cert"],
+            assets["server_key"],
+        )
 
-    print("\n" + "="*60)
-    print(f" 【スマートフォン等からテスト接続する場合のURL】")
-    print(f"  --> http://{local_ip}:{port}/")
-    print(f"  ※ PCとスマホが同じWi-Fiルーターに接続されている必要があります。")
-    print("="*60 + "\n")
+        def start_host_server():
+            try:
+                host_server.start()
+            except Exception as error:
+                logger.error("Host management server stopped: %s", error, exc_info=True)
 
-    # 外部接続を許可するために 0.0.0.0 で起動
-    app.run(host='0.0.0.0', port=port, threaded=True)
+        host_thread = threading.Thread(
+            target=start_host_server,
+            name="host-http-server",
+            daemon=True,
+        )
+        host_thread.start()
+
+        print("\n" + "="*68)
+        print(" 【ホストPCの管理画面】")
+        print(f"  --> http://localhost:{port}/")
+        print(" 【スマートフォンの証明書初期設定】")
+        print(f"  --> https://{local_ip}:{https_port}/setup")
+        print(" 【登録済みスマートフォンの映像画面】")
+        print(f"  --> https://{local_ip}:{https_port}/static/index.html")
+        print("  ※ PCとスマホが同じWi-Fiルーターに接続されている必要があります。")
+        print("="*68 + "\n")
+
+        try:
+            guest_server.start()
+        finally:
+            try:
+                guest_server.stop()
+            finally:
+                host_server.stop()
+    else:
+        print("\n" + "="*60)
+        print(" 【スマートフォン等から接続する場合のURL】")
+        print(f"  --> http://{local_ip}:{port}/")
+        print("  ※ TLSは無効です。")
+        print("="*60 + "\n")
+        legacy_server = CherootServer((local_ip, port), app, numthreads=32)
+        legacy_server.start()
