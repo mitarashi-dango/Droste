@@ -1,8 +1,9 @@
-const CACHE_NAME = 'indicator-stream-v7';
+const CACHE_NAME = 'droste-stream-v10';
 const ASSETS = [
   '/static/index.html',
   '/static/pair.html',
   '/static/manifest.json',
+  '/static/icon-180.png',
   '/static/icon-192.png',
   '/static/icon-512.png'
 ];

@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $version = (Get-Content -LiteralPath (Join-Path $projectRoot 'VERSION') -Raw).Trim()
 $distRoot = Join-Path $projectRoot 'dist'
-$releaseName = "RoomIndicator-$version-windows-x64"
+$releaseName = "Droste-$version-windows-x64"
 $stagePath = Join-Path $distRoot $releaseName
 $zipPath = Join-Path $distRoot "$releaseName.zip"
 $pythonVersion = '3.12.10'
@@ -45,7 +45,9 @@ $releaseFiles = @(
     'requirements.txt',
     'requirements.lock.txt',
     'setup.bat',
-    'run_test.bat',
+    'regain.bat',
+    'create_shortcut.ps1',
+    'droste.ico',
     'configure_firewall.ps1',
     'verify_wheelhouse.ps1',
     'verify_python_installer.ps1'

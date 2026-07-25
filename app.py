@@ -117,7 +117,7 @@ DEFAULT_CONFIG = {
     "https_port": 5443,
 }
 
-SELF_WINDOW_MARKERS = ("Room Indicator Stream",)
+SELF_WINDOW_MARKERS = ("Droste",)
 
 def load_config():
     config = DEFAULT_CONFIG.copy()
@@ -914,7 +914,7 @@ def tls_setup_page():
     return response
 
 
-@app.route('/tls/room-indicator-ca.crt')
+@app.route('/tls/droste-ca.crt')
 def download_tls_ca():
     limited = rate_limit_response("tls-download", 10, 60)
     if limited:
@@ -924,14 +924,14 @@ def download_tls_ca():
         assets["ca_der"],
         mimetype="application/x-x509-ca-cert",
         as_attachment=True,
-        download_name="room-indicator-ca.crt",
+        download_name="droste-ca.crt",
         max_age=0,
     )
     response.headers["Cache-Control"] = "no-store"
     return response
 
 
-@app.route('/tls/room-indicator-ca.mobileconfig')
+@app.route('/tls/droste-ca.mobileconfig')
 def download_tls_mobileconfig():
     limited = rate_limit_response("tls-download", 10, 60)
     if limited:
@@ -941,7 +941,7 @@ def download_tls_mobileconfig():
         assets["mobileconfig"],
         mimetype="application/x-apple-aspen-config",
         as_attachment=True,
-        download_name="room-indicator-ca.mobileconfig",
+        download_name="droste-ca.mobileconfig",
         max_age=0,
     )
     response.headers["Cache-Control"] = "no-store"

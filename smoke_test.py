@@ -10,7 +10,7 @@ BASE_DIRECTORY = os.path.dirname(__file__)
 CA_CERTIFICATE = os.path.join(
     BASE_DIRECTORY,
     "tls",
-    "room-indicator-ca.crt",
+    "droste-ca.crt",
 )
 
 
@@ -55,13 +55,13 @@ def main():
         f"https://{https_host}:{https_port}/setup",
         ssl_context,
     )
-    if status != 200 or b"Room Indicator HTTPS" not in body:
+    if status != 200 or b"Droste HTTPS" not in body:
         raise RuntimeError("The HTTPS setup page is not ready.")
 
     status, headers, body = fetch(
         (
             f"https://{https_host}:{https_port}"
-            "/tls/room-indicator-ca.crt"
+            "/tls/droste-ca.crt"
         ),
         ssl_context,
     )

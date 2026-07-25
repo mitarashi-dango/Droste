@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo ===================================================
-echo  Room Indicator - First-time setup
+echo  Droste - First-time setup
 echo ===================================================
 echo.
 
@@ -53,7 +53,7 @@ if errorlevel 2 exit /b 1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File verify_python_installer.ps1 -InstallerPath "%PYTHON_INSTALLER%"
 if errorlevel 1 goto python_installer_invalid
 
-start "" /wait "%PYTHON_INSTALLER%" InstallAllUsers=0 Include_launcher=1 InstallLauncherAllUsers=0 Include_test=0 AssociateFiles=0 Shortcuts=0 PrependPath=0 TargetDir="%PYTHON_INSTALL_DIR%" SimpleInstall=1 SimpleInstallDescription="Required by Room Indicator"
+start "" /wait "%PYTHON_INSTALLER%" InstallAllUsers=0 Include_launcher=1 InstallLauncherAllUsers=0 Include_test=0 AssociateFiles=0 Shortcuts=0 PrependPath=0 TargetDir="%PYTHON_INSTALL_DIR%" SimpleInstall=1 SimpleInstallDescription="Required by Droste"
 if errorlevel 1 goto python_install_failed
 
 if not exist "%PYTHON_INSTALL_DIR%\python.exe" goto python_install_failed
@@ -85,21 +85,28 @@ if errorlevel 1 goto setup_failed
 ".venv\Scripts\python.exe" -c "import flask,PIL,win32gui,qrcode,cheroot,cryptography" >nul 2>nul
 if errorlevel 1 goto setup_failed
 
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File create_shortcut.ps1 -ProjectRoot "%~dp0"
+if errorlevel 1 (
+    echo Warning: The Droste desktop shortcut could not be created.
+    echo You can still start Droste by double-clicking regain.bat.
+)
+
 echo.
 echo Setup completed successfully.
-echo Double-click run_test.bat to start Room Indicator.
+echo Double-click the Droste desktop shortcut to start.
+echo You can also double-click regain.bat in this folder.
 pause
 exit /b 0
 
 :python_installer_missing
 echo Python 3.12 64-bit was not found, and the bundled installer is missing.
-echo Obtain a complete Room Indicator distribution ZIP and try again.
+echo Obtain a complete Droste distribution ZIP and try again.
 pause
 exit /b 1
 
 :python_installer_invalid
 echo The bundled Python installer failed its security check.
-echo Do not run it. Obtain a fresh Room Indicator distribution ZIP.
+echo Do not run it. Obtain a fresh Droste distribution ZIP.
 pause
 exit /b 1
 

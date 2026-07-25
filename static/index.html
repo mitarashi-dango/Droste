@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Room Indicator Stream</title>
+    <title>Droste</title>
     <!-- iOS PWA Meta Tags -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Indicator">
-    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <meta name="apple-mobile-web-app-title" content="Droste">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180.png">
     <link rel="manifest" href="/static/manifest.json">
 
     <!-- Google Fonts -->
@@ -221,7 +221,7 @@
             transform: translateY(0);
         }
 
-        .install-card {
+        .home-screen-card {
             width: min(100%, 520px);
             padding: 12px 14px;
             border: 1px solid rgba(0, 240, 255, 0.28);
@@ -231,23 +231,22 @@
             text-align: center;
         }
 
-        .install-card p {
-            margin: 0 0 10px;
+        .home-screen-card p {
+            margin: 0;
             color: var(--text-muted);
             font-size: 0.8rem;
             line-height: 1.5;
         }
 
-        .install-card button {
-            width: 100%;
-            padding: 11px 14px;
-            border: 0;
-            border-radius: 10px;
-            background: linear-gradient(135deg, var(--accent-color), #00a8ff);
-            color: #001114;
-            font: inherit;
-            font-weight: 750;
-            cursor: pointer;
+        /*
+         * iPhoneのホーム画面から起動した場合は、JavaScriptの判定を
+         * 待たずにホーム画面追加の案内を隠す。
+         */
+        @media (display-mode: standalone), (display-mode: minimal-ui),
+               (display-mode: fullscreen), (display-mode: window-controls-overlay) {
+            .home-screen-card {
+                display: none !important;
+            }
         }
 
         /* タブ型トグルスイッチ */
@@ -680,7 +679,7 @@
     <div class="bg-glow"></div>
 
     <header>
-        <h1><span class="status-dot" id="status-dot"></span>Room Indicator</h1>
+        <h1><span class="status-dot" id="status-dot"></span>Droste</h1>
         <div class="status-text" id="status-text">読み込み中...</div>
     </header>
 
@@ -700,9 +699,8 @@
             ⚠️ キャプチャ対象を設定してください
         </div>
 
-        <div class="install-card" id="install-card" hidden>
-            <p id="install-message">ホーム画面に追加すると、次回からアイコンを1回タップするだけで映像を開けます。</p>
-            <button type="button" id="install-button">ホーム画面に追加</button>
+        <div class="home-screen-card" id="home-screen-card" hidden>
+            <p>iPhoneではSafariの共有ボタンから「ホーム画面に追加」を選ぶと、次回からDrosteアイコンを1回タップするだけで開けます。</p>
         </div>
 
         <!-- デバッグ設定パネル (折りたたみ式) -->
@@ -797,69 +795,49 @@
         const btnFull = document.getElementById('btn-full');
         const streamImg = document.getElementById('stream-img');
         const controlsRow = document.getElementById('controls-row');
-        const installCard = document.getElementById('install-card');
-        const installButton = document.getElementById('install-button');
-        const installMessage = document.getElementById('install-message');
+        const homeScreenCard = document.getElementById('home-screen-card');
 
         let currentMode = 'app';
         let reconnectTimer = null;
         let requiresPairing = false;
         let pairingPollTimer = null;
-        let deferredInstallPrompt = null;
         let isRegisteredGuest = false;
+        const APP_DISPLAY_MODES = [
+            'standalone',
+            'minimal-ui',
+            'fullscreen',
+            'window-controls-overlay'
+        ];
 
         function isStandaloneApp() {
-            return window.matchMedia('(display-mode: standalone)').matches
+            return APP_DISPLAY_MODES.some(
+                (mode) => window.matchMedia(`(display-mode: ${mode})`).matches
+            )
                 || window.navigator.standalone === true;
         }
 
         function isIosDevice() {
-            return /iphone|ipad|ipod/i.test(navigator.userAgent);
+            return /iphone|ipad|ipod/i.test(navigator.userAgent)
+                || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
         }
 
-        function updateInstallCard() {
-            if (!isRegisteredGuest || isStandaloneApp()) {
-                installCard.hidden = true;
-                return;
-            }
-
-            const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
-            if (!isMobile) {
-                installCard.hidden = true;
-                return;
-            }
-
-            installCard.hidden = false;
-            if (deferredInstallPrompt) {
-                installMessage.textContent = 'ホーム画面に追加すると、次回からアイコンを1回タップするだけで映像を開けます。';
-                installButton.textContent = 'ホーム画面に追加';
-                installButton.hidden = false;
-            } else if (isIosDevice()) {
-                installMessage.textContent = '次回からワンタップで開くには、Safariの共有ボタンから「ホーム画面に追加」を選んでください。';
-                installButton.hidden = true;
-            } else {
-                installMessage.textContent = 'ブラウザのメニューから「ホーム画面に追加」または「アプリをインストール」を選んでください。';
-                installButton.hidden = true;
-            }
+        function updateHomeScreenCard() {
+            homeScreenCard.hidden = !(
+                isRegisteredGuest
+                && isIosDevice()
+                && !isStandaloneApp()
+            );
         }
 
-        window.addEventListener('beforeinstallprompt', (event) => {
-            event.preventDefault();
-            deferredInstallPrompt = event;
-            updateInstallCard();
+        APP_DISPLAY_MODES.forEach((mode) => {
+            const query = window.matchMedia(`(display-mode: ${mode})`);
+            if (typeof query.addEventListener === 'function') {
+                query.addEventListener('change', updateHomeScreenCard);
+            }
         });
-
-        window.addEventListener('appinstalled', () => {
-            deferredInstallPrompt = null;
-            installCard.hidden = true;
-        });
-
-        installButton.addEventListener('click', async () => {
-            if (!deferredInstallPrompt) return;
-            deferredInstallPrompt.prompt();
-            await deferredInstallPrompt.userChoice;
-            deferredInstallPrompt = null;
-            updateInstallCard();
+        window.addEventListener('pageshow', updateHomeScreenCard);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) updateHomeScreenCard();
         });
 
         // モード変更の送信
@@ -895,7 +873,7 @@
                 const data = await response.json();
                 requiresPairing = false;
                 isRegisteredGuest = data.can_configure !== true && Boolean(data.device);
-                updateInstallCard();
+                updateHomeScreenCard();
                 updateUI(data);
             } catch (error) {
                 console.error('Error fetching status:', error);

@@ -6,23 +6,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ruleName = "Room Indicator HTTPS $Port (Private LAN)"
+$ruleName = "Droste HTTPS $Port (Private LAN)"
 $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
     Select-Object -First 1
 $pythonPath = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)").ExecutablePath
 $localAddress = $listener.LocalAddress
 
 if (-not $pythonPath) {
-    throw "Room Indicator HTTPS server process was not found on port $Port."
-}
-
-$legacyRuleNames = @(
-    'Room Indicator HTTPS (Local Wi-Fi)',
-    "Room Indicator HTTPS $Port (Local Wi-Fi)"
-)
-foreach ($legacyRuleName in $legacyRuleNames) {
-    Get-NetFirewallRule -DisplayName $legacyRuleName -ErrorAction SilentlyContinue |
-        Remove-NetFirewallRule
+    throw "Droste HTTPS server process was not found on port $Port."
 }
 
 $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
@@ -33,7 +24,7 @@ if ($existing) {
 try {
     New-NetFirewallRule `
         -DisplayName $ruleName `
-        -Description 'Allow Room Indicator HTTPS only on a private local network.' `
+        -Description 'Allow Droste HTTPS only on a private local network.' `
         -Direction Inbound `
         -Action Allow `
         -Protocol TCP `

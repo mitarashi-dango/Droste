@@ -7,6 +7,7 @@ from unittest import mock
 import app
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from PIL import Image
 from tls_utils import ensure_local_tls_assets
 
 
@@ -204,7 +205,7 @@ class TlsAssetTests(unittest.TestCase):
 
 
 class FrontendAssetTests(unittest.TestCase):
-    def test_manifest_supports_installed_one_tap_launch(self):
+    def test_iphone_home_screen_supports_one_tap_launch(self):
         base_directory = os.path.dirname(__file__)
         with open(
             os.path.join(base_directory, "static", "manifest.json"),
@@ -221,8 +222,33 @@ class FrontendAssetTests(unittest.TestCase):
 
         self.assertEqual(manifest["display"], "standalone")
         self.assertEqual(manifest["start_url"], "/static/index.html")
-        self.assertIn("beforeinstallprompt", index_html)
+        self.assertEqual(manifest["id"], "/static/droste")
+        self.assertEqual(manifest["name"], "Droste")
+        self.assertEqual(manifest["short_name"], "Droste")
         self.assertIn("ホーム画面に追加", index_html)
+        self.assertIn('apple-touch-icon" sizes="180x180"', index_html)
+        self.assertIn("updateHomeScreenCard", index_html)
+        self.assertNotIn("beforeinstallprompt", index_html)
+        self.assertNotIn("Drosteをインストール", index_html)
+        self.assertIn("@media (display-mode: standalone)", index_html)
+
+    def test_droste_icons_have_required_sizes(self):
+        base_directory = os.path.dirname(__file__)
+        with Image.open(
+            os.path.join(base_directory, "static", "icon-180.png")
+        ) as icon_180:
+            self.assertEqual(icon_180.size, (180, 180))
+        with Image.open(
+            os.path.join(base_directory, "static", "icon-192.png")
+        ) as icon_192:
+            self.assertEqual(icon_192.size, (192, 192))
+        with Image.open(
+            os.path.join(base_directory, "static", "icon-512.png")
+        ) as icon_512:
+            self.assertEqual(icon_512.size, (512, 512))
+        with Image.open(os.path.join(base_directory, "droste.ico")) as windows_icon:
+            self.assertEqual(windows_icon.format, "ICO")
+            self.assertIn((256, 256), windows_icon.info["sizes"])
 
 
 class DistributionAssetTests(unittest.TestCase):
@@ -253,6 +279,31 @@ class DistributionAssetTests(unittest.TestCase):
             verifier_script,
         )
         self.assertIn("Python Software Foundation", verifier_script)
+
+    def test_distribution_uses_droste_release_name(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "build_release.ps1"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            build_script = file.read()
+
+        self.assertIn('$releaseName = "Droste-$version-windows-x64"', build_script)
+        self.assertIn("'regain.bat'", build_script)
+        self.assertNotIn("'run_test.bat'", build_script)
+        self.assertIn("'create_shortcut.ps1'", build_script)
+        self.assertIn("'droste.ico'", build_script)
+
+        with open(
+            os.path.join(base_directory, "create_shortcut.ps1"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            shortcut_script = file.read()
+        self.assertIn("'Droste.lnk'", shortcut_script)
+        self.assertIn("'regain.bat'", shortcut_script)
+        self.assertIn("'droste.ico'", shortcut_script)
 
 
 if __name__ == "__main__":

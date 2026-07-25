@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo ===================================================
-echo  Room Indicator Streamer
+echo  Droste
 echo ===================================================
 echo.
 echo Starting the local PC management page and guest HTTPS server.

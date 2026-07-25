@@ -1,8 +1,8 @@
 {
-  "name": "Room Indicator Streamer",
-  "short_name": "Indicator",
+  "name": "Droste",
+  "short_name": "Droste",
   "description": "登録済みPCの画面を同じローカルネットワークから表示します。",
-  "id": "/static/",
+  "id": "/static/droste",
   "scope": "/static/",
   "start_url": "/static/index.html",
   "display": "standalone",

@@ -12,8 +12,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
-CA_COMMON_NAME = "Room Indicator Local CA"
-SERVER_COMMON_NAME = "Room Indicator LAN Server"
+CA_COMMON_NAME = "Droste Local CA"
+SERVER_COMMON_NAME = "Droste LAN Server"
 
 
 def _atomic_write(path, data, private=False):
@@ -71,7 +71,7 @@ def _new_ca(ca_key_path, ca_cert_path):
     now = datetime.datetime.now(datetime.timezone.utc)
     key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     subject = x509.Name([
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Room Indicator"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Droste"),
         x509.NameAttribute(NameOID.COMMON_NAME, CA_COMMON_NAME),
     ])
     certificate = (
@@ -230,7 +230,7 @@ def _new_server_certificate(ca_key, ca_certificate, lan_ip, key_path, cert_path)
     now = datetime.datetime.now(datetime.timezone.utc)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Room Indicator"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Droste"),
         x509.NameAttribute(NameOID.COMMON_NAME, SERVER_COMMON_NAME),
     ])
     dns_names, ip_addresses = _server_names(lan_ip)
@@ -289,23 +289,23 @@ def _new_server_certificate(ca_key, ca_certificate, lan_ip, key_path, cert_path)
 def _write_mobileconfig(ca_certificate, path):
     der_certificate = ca_certificate.public_bytes(serialization.Encoding.DER)
     fingerprint = ca_certificate.fingerprint(hashes.SHA256()).hex()
-    profile_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"room-indicator-profile-{fingerprint}"))
-    cert_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"room-indicator-cert-{fingerprint}"))
+    profile_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"droste-profile-{fingerprint}"))
+    cert_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"droste-cert-{fingerprint}"))
     payload = {
         "PayloadContent": [{
-            "PayloadCertificateFileName": "room-indicator-ca.cer",
+            "PayloadCertificateFileName": "droste-ca.cer",
             "PayloadContent": der_certificate,
-            "PayloadDescription": "Room IndicatorのLAN内HTTPS証明書を信頼します。",
+            "PayloadDescription": "DrosteのLAN内HTTPS証明書を信頼します。",
             "PayloadDisplayName": CA_COMMON_NAME,
-            "PayloadIdentifier": "local.room-indicator.ca",
+            "PayloadIdentifier": "local.droste.ca",
             "PayloadType": "com.apple.security.root",
             "PayloadUUID": cert_uuid,
             "PayloadVersion": 1,
         }],
-        "PayloadDescription": "同じWi-Fi内のRoom Indicatorへ安全に接続するための証明書です。",
-        "PayloadDisplayName": "Room Indicator HTTPS",
-        "PayloadIdentifier": "local.room-indicator.profile",
-        "PayloadOrganization": "Room Indicator",
+        "PayloadDescription": "同じWi-Fi内のDrosteへ安全に接続するための証明書です。",
+        "PayloadDisplayName": "Droste HTTPS",
+        "PayloadIdentifier": "local.droste.profile",
+        "PayloadOrganization": "Droste",
         "PayloadRemovalDisallowed": False,
         "PayloadType": "Configuration",
         "PayloadUUID": profile_uuid,
@@ -317,12 +317,12 @@ def _write_mobileconfig(ca_certificate, path):
 def ensure_local_tls_assets(base_directory, lan_ip):
     tls_directory = os.path.join(base_directory, "tls")
     os.makedirs(tls_directory, exist_ok=True)
-    ca_key_path = os.path.join(tls_directory, "room-indicator-ca-key.pem")
-    ca_cert_path = os.path.join(tls_directory, "room-indicator-ca.crt")
-    ca_der_path = os.path.join(tls_directory, "room-indicator-ca-android.crt")
-    server_key_path = os.path.join(tls_directory, "room-indicator-server-key.pem")
-    server_cert_path = os.path.join(tls_directory, "room-indicator-server.crt")
-    mobileconfig_path = os.path.join(tls_directory, "room-indicator-ca.mobileconfig")
+    ca_key_path = os.path.join(tls_directory, "droste-ca-key.pem")
+    ca_cert_path = os.path.join(tls_directory, "droste-ca.crt")
+    ca_der_path = os.path.join(tls_directory, "droste-ca-android.crt")
+    server_key_path = os.path.join(tls_directory, "droste-server-key.pem")
+    server_cert_path = os.path.join(tls_directory, "droste-server.crt")
+    mobileconfig_path = os.path.join(tls_directory, "droste-ca.mobileconfig")
 
     ca_key, ca_certificate = _load_or_create_ca(ca_key_path, ca_cert_path)
     _atomic_write(ca_der_path, ca_certificate.public_bytes(serialization.Encoding.DER))
