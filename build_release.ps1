@@ -9,12 +9,12 @@ $distRoot = Join-Path $projectRoot 'dist'
 $releaseName = "Droste-$version-windows-x64"
 $stagePath = Join-Path $distRoot $releaseName
 $zipPath = Join-Path $distRoot "$releaseName.zip"
-$pythonVersion = '3.12.10'
+$pythonVersion = '3.13.14'
 $pythonInstallerName = "python-$pythonVersion-amd64.exe"
 $pythonInstallerUrl = "https://www.python.org/ftp/python/$pythonVersion/$pythonInstallerName"
-$pythonInstallerSha256 = '67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb'
-$pythonLicenseUrl = 'https://raw.githubusercontent.com/python/cpython/v3.12.10/LICENSE'
-$pythonLicenseSha256 = '3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf'
+$pythonInstallerSha256 = 'c54d9b9bbb8a36e6489363ddd01139707fd781d72f1f9e90c7ec65d0061368e0'
+$pythonLicenseUrl = 'https://raw.githubusercontent.com/python/cpython/v3.13.14/LICENSE'
+$pythonLicenseSha256 = '78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb'
 $vendorPath = Join-Path $projectRoot 'vendor'
 $pythonInstallerPath = Join-Path $vendorPath $pythonInstallerName
 $pythonLicensePath = Join-Path $vendorPath 'PYTHON-LICENSE.txt'
@@ -47,6 +47,7 @@ $releaseFiles = @(
     'requirements.lock.txt',
     'setup.bat',
     'regain.bat',
+    'droste_tray.pyw',
     'create_shortcut.ps1',
     'droste.ico',
     'configure_firewall.ps1',
@@ -110,6 +111,10 @@ if (-not $WithoutWheelhouse) {
     New-Item -ItemType Directory -Path $wheelhousePath | Out-Null
     & $pythonPath -m pip download `
         --only-binary=:all: `
+        --platform win_amd64 `
+        --implementation cp `
+        --python-version 313 `
+        --abi cp313 `
         --dest $wheelhousePath `
         -r (Join-Path $projectRoot 'requirements.lock.txt')
     if ($LASTEXITCODE -ne 0) {

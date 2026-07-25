@@ -526,6 +526,7 @@ class ScreenStreamer:
         self.target_title = ""
         self.active_clients = 0
         self.local_clients = 0
+        self.paused = False
         self.running = True
 
     def start(self):
@@ -542,11 +543,23 @@ class ScreenStreamer:
                 active_clients = self.active_clients
                 local_clients = self.local_clients
                 mode = self.mode
+                paused = self.paused
 
             # 誰も見ていない間は画面キャプチャ自体を止める。
             if active_clients == 0:
                 self._set_status("idle_no_clients")
                 last_placeholder_key = None
+                time.sleep(0.2)
+                continue
+
+            if paused:
+                placeholder_key = ("paused", "")
+                if last_placeholder_key != placeholder_key:
+                    self._publish_image(
+                        create_dummy_image("Streaming paused on the host PC"),
+                        "paused",
+                    )
+                    last_placeholder_key = placeholder_key
                 time.sleep(0.2)
                 continue
 
@@ -661,6 +674,8 @@ class ScreenStreamer:
                 img.save(img_io, 'JPEG', quality=75)
                 frame = img_io.getvalue()
             with self.lock:
+                if self.paused and status != "paused":
+                    return
                 self.latest_frame = frame
                 self.status = status
         finally:
@@ -681,13 +696,25 @@ class ScreenStreamer:
     def set_mode(self, mode):
         with self.lock:
             self.mode = mode
-            self.status = "switching"
+            self.status = "paused" if self.paused else "switching"
+
+    def set_paused(self, paused):
+        paused = bool(paused)
+        with self.lock:
+            self.paused = paused
+            self.status = "paused" if paused else "switching"
+        if paused:
+            self._publish_image(
+                create_dummy_image("Streaming paused on the host PC"),
+                "paused",
+            )
 
     def get_state(self):
         with self.lock:
             return {
                 "mode": self.mode,
                 "status": self.status,
+                "paused": self.paused,
                 "target_window_title": self.target_title,
                 "active_clients": self.active_clients,
                 "local_clients": self.local_clients,
@@ -983,9 +1010,15 @@ def api_tls_fingerprint():
 @app.route('/api/auth/status')
 def api_auth_status():
     if is_local_request():
-        return jsonify({"authorized": True, "is_host": True, "device": None})
+        return jsonify({
+            "app": "Droste",
+            "authorized": True,
+            "is_host": True,
+            "device": None,
+        })
     device = get_authenticated_device()
     return jsonify({
+        "app": "Droste",
         "authorized": device is not None,
         "is_host": False,
         "device": device,
@@ -1313,6 +1346,27 @@ def api_mode():
             "device": device,
             **streamer.get_state(),
         })
+
+
+@app.route('/api/pause', methods=['POST'])
+def api_pause():
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+    data = request.get_json(silent=True) or {}
+    paused = data.get("paused")
+    if not isinstance(paused, bool):
+        return jsonify({
+            "status": "error",
+            "message": "paused must be true or false",
+        }), 400
+    streamer.set_paused(paused)
+    return jsonify({
+        "result": "success",
+        "can_configure": True,
+        **streamer.get_state(),
+    })
+
 
 @app.route('/api/windows')
 def api_windows():

@@ -7,34 +7,34 @@ echo.
 
 set "BOOTSTRAP_PYTHON="
 set "BOOTSTRAP_ARGS="
-set "PYTHON_INSTALLER=python-3.12.10-amd64.exe"
-set "PYTHON_INSTALL_DIR=%LocalAppData%\Programs\Python\Python312"
+set "PYTHON_INSTALLER=python-3.13.14-amd64.exe"
+set "PYTHON_INSTALL_DIR=%LocalAppData%\Programs\Python\Python313"
 
 where py >nul 2>nul
 if not errorlevel 1 (
-    py -3.12 -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+    py -3.13 -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,13) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
     if not errorlevel 1 (
         set "BOOTSTRAP_PYTHON=py"
-        set "BOOTSTRAP_ARGS=-3.12"
+        set "BOOTSTRAP_ARGS=-3.13"
     )
 )
 
 if not defined BOOTSTRAP_PYTHON (
     where python >nul 2>nul
     if not errorlevel 1 (
-        python -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+        python -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,13) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
         if not errorlevel 1 set "BOOTSTRAP_PYTHON=python"
     )
 )
 
 if not defined BOOTSTRAP_PYTHON if exist "%PYTHON_INSTALL_DIR%\python.exe" (
-    "%PYTHON_INSTALL_DIR%\python.exe" -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+    "%PYTHON_INSTALL_DIR%\python.exe" -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,13) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
     if not errorlevel 1 set "BOOTSTRAP_PYTHON=%PYTHON_INSTALL_DIR%\python.exe"
 )
 
-if not defined BOOTSTRAP_PYTHON if exist "%ProgramFiles%\Python312\python.exe" (
-    "%ProgramFiles%\Python312\python.exe" -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
-    if not errorlevel 1 set "BOOTSTRAP_PYTHON=%ProgramFiles%\Python312\python.exe"
+if not defined BOOTSTRAP_PYTHON if exist "%ProgramFiles%\Python313\python.exe" (
+    "%ProgramFiles%\Python313\python.exe" -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,13) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+    if not errorlevel 1 set "BOOTSTRAP_PYTHON=%ProgramFiles%\Python313\python.exe"
 )
 
 if not defined BOOTSTRAP_PYTHON goto python_missing
@@ -43,7 +43,7 @@ goto python_ready
 :python_missing
 if not exist "%PYTHON_INSTALLER%" goto python_installer_missing
 
-echo Python 3.12 64-bit is not installed.
+echo Python 3.13 64-bit is not installed.
 echo The bundled official Python installer can install it for this Windows user.
 echo Existing Python versions will not be removed.
 echo.
@@ -57,7 +57,7 @@ start "" /wait "%PYTHON_INSTALLER%" InstallAllUsers=0 Include_launcher=1 Install
 if errorlevel 1 goto python_install_failed
 
 if not exist "%PYTHON_INSTALL_DIR%\python.exe" goto python_install_failed
-"%PYTHON_INSTALL_DIR%\python.exe" -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+"%PYTHON_INSTALL_DIR%\python.exe" -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2] == (3,13) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
 if errorlevel 1 goto python_install_failed
 set "BOOTSTRAP_PYTHON=%PYTHON_INSTALL_DIR%\python.exe"
 
@@ -69,7 +69,7 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 goto setup_failed
 )
 
-".venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3,12) else 1)" >nul 2>nul
+".venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3,13) else 1)" >nul 2>nul
 if errorlevel 1 goto stale_environment
 
 echo Installing verified dependency versions...
@@ -94,12 +94,13 @@ if errorlevel 1 (
 echo.
 echo Setup completed successfully.
 echo Double-click the Droste desktop shortcut to start.
-echo You can also double-click regain.bat in this folder.
+echo Droste will run from the Windows notification area without a console window.
+echo Use regain.bat only when you need to see diagnostic messages.
 pause
 exit /b 0
 
 :python_installer_missing
-echo Python 3.12 64-bit was not found, and the bundled installer is missing.
+echo Python 3.13 64-bit was not found, and the bundled installer is missing.
 echo Obtain a complete Droste distribution ZIP and try again.
 pause
 exit /b 1
@@ -111,7 +112,7 @@ pause
 exit /b 1
 
 :python_install_failed
-echo Python 3.12 installation was cancelled or did not complete.
+echo Python 3.13 installation was cancelled or did not complete.
 echo Run setup.bat again when installation is complete.
 pause
 exit /b 1

@@ -5,11 +5,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $resolvedRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
-$targetPath = Join-Path $resolvedRoot 'regain.bat'
+$targetPath = Join-Path $resolvedRoot '.venv\Scripts\pythonw.exe'
+$launcherPath = Join-Path $resolvedRoot 'droste_tray.pyw'
 $iconPath = Join-Path $resolvedRoot 'droste.ico'
 
 if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-    throw "Launcher was not found: $targetPath"
+    throw "Python windowless launcher was not found: $targetPath"
+}
+if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
+    throw "Droste tray launcher was not found: $launcherPath"
 }
 if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) {
     throw "Droste icon was not found: $iconPath"
@@ -24,10 +28,11 @@ $shortcutPath = Join-Path $desktopPath 'Droste.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $targetPath
+$shortcut.Arguments = "`"$launcherPath`""
 $shortcut.WorkingDirectory = $resolvedRoot
 $shortcut.IconLocation = "$iconPath,0"
-$shortcut.Description = 'Start Droste'
-$shortcut.WindowStyle = 1
+$shortcut.Description = 'Start Droste in the notification area'
+$shortcut.WindowStyle = 7
 $shortcut.Save()
 
 Write-Host "Created shortcut: $shortcutPath"

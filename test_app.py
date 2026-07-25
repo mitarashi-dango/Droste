@@ -27,6 +27,7 @@ class AppRouteTests(unittest.TestCase):
         app._rate_limit_events.clear()
         app._guest_stream_counts.clear()
         app._guest_stream_total = 0
+        app.streamer.set_paused(False)
         self.client = app.app.test_client()
 
     def tearDown(self):
@@ -38,6 +39,7 @@ class AppRouteTests(unittest.TestCase):
         app._rate_limit_events.clear()
         app._guest_stream_counts.clear()
         app._guest_stream_total = 0
+        app.streamer.set_paused(False)
         self.temporary_directory.cleanup()
 
     def test_management_api_is_local_only(self):
@@ -54,6 +56,17 @@ class AppRouteTests(unittest.TestCase):
 
         self.assertEqual(local_response.status_code, 200)
         self.assertEqual(remote_response.status_code, 403)
+
+    def test_local_auth_status_identifies_droste_for_the_tray_launcher(self):
+        response = self.client.get(
+            "/api/auth/status",
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["app"], "Droste")
+        self.assertIs(response.get_json()["is_host"], True)
 
     def test_unregistered_remote_device_cannot_open_stream(self):
         response = self.client.get(
@@ -164,6 +177,38 @@ class AppRouteTests(unittest.TestCase):
         app.release_guest_stream("device-1")
         self.assertEqual(app._guest_stream_total, 0)
 
+    def test_stream_pause_is_local_only_and_replaces_the_live_frame(self):
+        local_response = self.client.post(
+            "/api/pause",
+            json={"paused": True},
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        remote_response = self.client.post(
+            "/api/pause",
+            json={"paused": False},
+            base_url="https://localhost:5443",
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+
+        self.assertEqual(local_response.status_code, 200)
+        self.assertTrue(local_response.get_json()["paused"])
+        self.assertEqual(app.streamer.get_state()["status"], "paused")
+        self.assertIsNotNone(app.streamer.get_frame())
+        self.assertEqual(remote_response.status_code, 403)
+
+    def test_stream_pause_rejects_a_late_live_frame(self):
+        app.streamer.set_paused(True)
+        paused_frame = app.streamer.get_frame()
+
+        app.streamer._publish_image(
+            Image.new("RGB", (8, 8), color=(255, 0, 0)),
+            "streaming_app",
+        )
+
+        self.assertEqual(app.streamer.get_frame(), paused_frame)
+        self.assertEqual(app.streamer.get_state()["status"], "paused")
+
 
 class TlsAssetTests(unittest.TestCase):
     def test_assets_are_reused_and_key_matches_certificate(self):
@@ -176,10 +221,15 @@ class TlsAssetTests(unittest.TestCase):
                 destination.write(mismatched_key)
 
             second = ensure_local_tls_assets(directory, "192.168.1.10")
+            changed_ip = ensure_local_tls_assets(directory, "192.168.1.25")
 
             self.assertEqual(
                 first["ca_fingerprint_sha256"],
                 second["ca_fingerprint_sha256"],
+            )
+            self.assertEqual(
+                first["ca_fingerprint_sha256"],
+                changed_ip["ca_fingerprint_sha256"],
             )
             for key in (
                 "ca_cert",
@@ -205,6 +255,50 @@ class TlsAssetTests(unittest.TestCase):
 
 
 class FrontendAssetTests(unittest.TestCase):
+    def test_capture_target_apply_button_is_next_to_window_select(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        group_start = index_html.index(
+            '<div class="debug-input-group window-selection-group">'
+        )
+        group_end = index_html.index("</div>", group_start)
+        selection_group = index_html[group_start:group_end]
+
+        self.assertIn('id="win-select"', selection_group)
+        self.assertIn(
+            "saveConfig(this, 'window-config-feedback')",
+            selection_group,
+        )
+        self.assertIn('onclick="loadWindows()">一覧を更新', selection_group)
+        self.assertLess(
+            selection_group.index('id="win-select"'),
+            selection_group.index("この選択を適用"),
+        )
+
+    def test_host_controls_have_pause_feedback_and_collapsed_advanced_settings(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        self.assertIn('id="btn-pause"', index_html)
+        self.assertIn("fetch('/api/pause'", index_html)
+        self.assertIn('id="window-config-feedback"', index_html)
+        self.assertIn('aria-live="polite"', index_html)
+        self.assertIn('<details class="advanced-settings">', index_html)
+        self.assertIn("詳細設定（通常は変更不要）", index_html)
+        self.assertIn("詳細設定を適用", index_html)
+        self.assertNotIn("alert('設定を適用しました", index_html)
+
     def test_iphone_home_screen_supports_one_tap_launch(self):
         base_directory = os.path.dirname(__file__)
         with open(
@@ -252,7 +346,7 @@ class FrontendAssetTests(unittest.TestCase):
 
 
 class DistributionAssetTests(unittest.TestCase):
-    def test_setup_prefers_python_312_and_verifies_bundled_installer(self):
+    def test_setup_prefers_python_313_and_verifies_bundled_installer(self):
         base_directory = os.path.dirname(__file__)
         with open(
             os.path.join(base_directory, "setup.bat"),
@@ -267,7 +361,7 @@ class DistributionAssetTests(unittest.TestCase):
         ) as file:
             verifier_script = file.read()
 
-        self.assertLess(setup_script.index("py -3.12"), setup_script.index("where python"))
+        self.assertLess(setup_script.index("py -3.13"), setup_script.index("where python"))
         self.assertLess(
             setup_script.index("-File verify_python_installer.ps1"),
             setup_script.index('start "" /wait "%PYTHON_INSTALLER%"'),
@@ -275,7 +369,7 @@ class DistributionAssetTests(unittest.TestCase):
         self.assertIn("InstallLauncherAllUsers=0", setup_script)
         self.assertIn("TargetDir=\"%PYTHON_INSTALL_DIR%\"", setup_script)
         self.assertIn(
-            "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb",
+            "c54d9b9bbb8a36e6489363ddd01139707fd781d72f1f9e90c7ec65d0061368e0",
             verifier_script,
         )
         self.assertIn("Python Software Foundation", verifier_script)
@@ -292,6 +386,7 @@ class DistributionAssetTests(unittest.TestCase):
         self.assertIn('$releaseName = "Droste-$version-windows-x64"', build_script)
         self.assertIn("'START-HERE.txt'", build_script)
         self.assertIn("'regain.bat'", build_script)
+        self.assertIn("'droste_tray.pyw'", build_script)
         self.assertNotIn("'run_test.bat'", build_script)
         self.assertIn("'create_shortcut.ps1'", build_script)
         self.assertIn("'droste.ico'", build_script)
@@ -303,8 +398,21 @@ class DistributionAssetTests(unittest.TestCase):
         ) as file:
             shortcut_script = file.read()
         self.assertIn("'Droste.lnk'", shortcut_script)
-        self.assertIn("'regain.bat'", shortcut_script)
+        self.assertIn(r"'.venv\Scripts\pythonw.exe'", shortcut_script)
+        self.assertIn("'droste_tray.pyw'", shortcut_script)
         self.assertIn("'droste.ico'", shortcut_script)
+
+        with open(
+            os.path.join(base_directory, "droste_tray.pyw"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            tray_launcher = file.read()
+        self.assertIn("subprocess.CREATE_NO_WINDOW", tray_launcher)
+        self.assertIn("win32gui.Shell_NotifyIcon", tray_launcher)
+        self.assertIn('"Drosteを終了"', tray_launcher)
+        self.assertIn('"管理画面を開く"', tray_launcher)
+        self.assertIn("regain.bat", tray_launcher)
 
         guide_path = os.path.join(
             base_directory,
@@ -315,6 +423,7 @@ class DistributionAssetTests(unittest.TestCase):
         self.assertIn("setup.bat", guide)
         self.assertIn("regain.bat", guide)
         self.assertIn("ホーム画面に追加", guide)
+        self.assertIn("通知領域", guide)
 
 
 if __name__ == "__main__":

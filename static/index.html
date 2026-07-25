@@ -346,6 +346,15 @@
             width: 100%;
         }
 
+        .window-selection-group {
+            align-items: stretch;
+        }
+
+        .window-selection-group .debug-btn {
+            flex: 0 0 auto;
+            white-space: nowrap;
+        }
+
         .debug-select, .debug-input {
             flex-grow: 1;
             min-width: 0;
@@ -396,6 +405,50 @@
 
         .debug-btn-secondary:hover {
             background: rgba(255, 255, 255, 0.05);
+        }
+
+        .config-feedback {
+            min-height: 1.35em;
+            margin: 8px 2px 0;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            line-height: 1.35;
+        }
+
+        .config-feedback.success {
+            color: #6ee7b7;
+        }
+
+        .config-feedback.error {
+            color: #fca5a5;
+        }
+
+        .advanced-settings {
+            border: 1px solid var(--panel-border);
+            border-radius: 12px;
+            background: rgba(11, 15, 25, 0.45);
+            overflow: hidden;
+        }
+
+        .advanced-settings summary {
+            padding: 12px 14px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .advanced-settings[open] summary {
+            color: var(--text-color);
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        .advanced-settings-content {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding: 14px;
         }
 
         .pairing-section {
@@ -563,6 +616,38 @@
             transform: rotate(45deg);
         }
 
+        .pause-control-btn {
+            height: 40px;
+            flex: 0 0 auto;
+            padding: 0 13px;
+            border: 1px solid rgba(248, 113, 113, 0.5);
+            border-radius: 10px;
+            background: rgba(127, 29, 29, 0.2);
+            color: #fecaca;
+            font-family: inherit;
+            font-size: 0.82rem;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .pause-control-btn:hover {
+            border-color: #f87171;
+            background: rgba(127, 29, 29, 0.35);
+        }
+
+        .pause-control-btn.paused {
+            border-color: rgba(52, 211, 153, 0.7);
+            background: rgba(6, 95, 70, 0.35);
+            color: #a7f3d0;
+        }
+
+        .pause-control-btn:disabled {
+            cursor: wait;
+            opacity: 0.6;
+        }
+
         /* トグルスイッチスタイル */
         .switch {
             position: relative;
@@ -615,9 +700,9 @@
         .controls-row {
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 10px;
             width: 100%;
-            max-width: 360px;
+            max-width: 520px;
             justify-content: center;
         }
 
@@ -665,12 +750,18 @@
             }
 
             .controls-row {
-                max-width: 360px;
+                max-width: 420px;
+                flex-wrap: wrap;
             }
 
             .toggle-container {
                 width: auto;
                 min-width: 0;
+            }
+
+            .pause-control-btn {
+                order: 3;
+                width: 100%;
             }
         }
     </style>
@@ -707,33 +798,41 @@
         <div class="debug-panel" id="debug-panel">
             <div class="debug-row">
                 <label for="win-select">キャプチャ対象ウィンドウの選択</label>
-                <div class="debug-input-group">
+                <div class="debug-input-group window-selection-group">
                     <select id="win-select" class="debug-select" onchange="syncWindowInput()">
                         <option value="">ウィンドウを検出中...</option>
                     </select>
-                    <button class="debug-btn debug-btn-secondary" onclick="loadWindows()">更新</button>
+                    <button class="debug-btn" id="btn-apply-window" onclick="saveConfig(this, 'window-config-feedback')">この選択を適用</button>
+                    <button class="debug-btn debug-btn-secondary" onclick="loadWindows()">一覧を更新</button>
                 </div>
+                <div class="config-feedback" id="window-config-feedback" role="status" aria-live="polite"></div>
             </div>
 
-            <div class="debug-row">
-                <label for="win-input">ターゲットウィンドウ名 (部分一致)</label>
-                <input type="text" id="win-input" class="debug-input" placeholder="対象アプリのウィンドウ名">
-            </div>
+            <details class="advanced-settings">
+                <summary>詳細設定（通常は変更不要）</summary>
+                <div class="advanced-settings-content">
+                    <div class="debug-row">
+                        <label for="win-input">ターゲットウィンドウ名（部分一致）</label>
+                        <input type="text" id="win-input" class="debug-input" placeholder="対象アプリのウィンドウ名">
+                    </div>
 
-            <div class="debug-row">
-                <label>配信フレームレート (FPS): <span id="fps-val">5</span></label>
-                <input type="range" id="fps-range" min="1" max="30" value="5" class="debug-input" style="padding:0;" oninput="updateFpsValue(this.value)">
-            </div>
+                    <div class="debug-row">
+                        <label>配信フレームレート (FPS): <span id="fps-val">5</span></label>
+                        <input type="range" id="fps-range" min="1" max="30" value="5" class="debug-input" style="padding:0;" oninput="updateFpsValue(this.value)">
+                    </div>
 
-            <div class="debug-row-inline" style="justify-content: space-between;">
-                <span style="font-size: 0.85rem; color: var(--text-muted);">ウィンドウが非アクティブでも前面に強制</span>
-                <label class="switch">
-                    <input type="checkbox" id="chk-force">
-                    <span class="slider-round"></span>
-                </label>
-            </div>
+                    <div class="debug-row-inline" style="justify-content: space-between;">
+                        <span style="font-size: 0.85rem; color: var(--text-muted);">ウィンドウが非アクティブでも前面に強制</span>
+                        <label class="switch">
+                            <input type="checkbox" id="chk-force">
+                            <span class="slider-round"></span>
+                        </label>
+                    </div>
 
-            <button class="debug-btn" style="width: 100%; margin-top: 8px;" onclick="saveConfig()">設定を適用する</button>
+                    <button class="debug-btn debug-btn-secondary" id="btn-apply-advanced" onclick="saveConfig(this, 'advanced-config-feedback')">詳細設定を適用</button>
+                    <div class="config-feedback" id="advanced-config-feedback" role="status" aria-live="polite"></div>
+                </div>
+            </details>
 
             <section class="pairing-section" aria-labelledby="tls-heading">
                 <div class="pairing-title-row">
@@ -778,6 +877,8 @@
                 <button class="toggle-btn" id="btn-full" onclick="setMode('full')">全体画面</button>
             </div>
 
+            <button class="pause-control-btn" id="btn-pause" onclick="togglePaused()">⏸ 配信を一時停止</button>
+
             <button class="settings-btn" id="btn-settings" onclick="toggleDebugPanel()" title="設定を開く">
                 <svg viewBox="0 0 24 24">
                     <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/>
@@ -793,12 +894,15 @@
         const toggleContainer = document.getElementById('toggle-container');
         const btnApp = document.getElementById('btn-app');
         const btnFull = document.getElementById('btn-full');
+        const btnPause = document.getElementById('btn-pause');
         const streamImg = document.getElementById('stream-img');
         const controlsRow = document.getElementById('controls-row');
         const homeScreenCard = document.getElementById('home-screen-card');
 
         let currentMode = 'app';
+        let isPaused = false;
         let reconnectTimer = null;
+        let configFeedbackTimer = null;
         let requiresPairing = false;
         let pairingPollTimer = null;
         let isRegisteredGuest = false;
@@ -859,6 +963,34 @@
             }
         }
 
+        async function togglePaused() {
+            const nextPaused = !isPaused;
+            btnPause.disabled = true;
+            btnPause.textContent = nextPaused ? '停止しています…' : '再開しています…';
+            try {
+                const response = await fetch('/api/pause', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ paused: nextPaused })
+                });
+                const data = await response.json();
+                if (!response.ok || data.result !== 'success') {
+                    throw new Error(data.message || '配信状態を変更できませんでした');
+                }
+                updateUI(data);
+            } catch (error) {
+                alertBanner.textContent = `⚠️ ${error.message}`;
+                alertBanner.classList.add('show');
+            } finally {
+                btnPause.disabled = false;
+                btnPause.textContent = isPaused
+                    ? '▶ 配信を再開'
+                    : '⏸ 配信を一時停止';
+            }
+        }
+
         // 定期的なステータスチェック（2秒ごと）
         async function checkStatus() {
             try {
@@ -887,9 +1019,14 @@
         function updateUI(state) {
             const mode = state.mode;
             currentMode = mode;
+            isPaused = state.paused === true;
 
             const canConfigure = state.can_configure === true;
             controlsRow.classList.toggle('controls-hidden', !canConfigure);
+            btnPause.classList.toggle('paused', isPaused);
+            btnPause.textContent = isPaused
+                ? '▶ 配信を再開'
+                : '⏸ 配信を一時停止';
             if (!canConfigure) {
                 debugPanel.classList.remove('show');
                 btnSettings.classList.remove('active');
@@ -909,6 +1046,14 @@
             // ステータス表示
             statusDot.className = 'status-dot';
             alertBanner.classList.remove('show');
+
+            if (isPaused) {
+                statusText.textContent = '配信一時停止中';
+                statusDot.className = 'status-dot warning';
+                alertBanner.textContent = '⏸ ホストPCで画面配信を一時停止しています';
+                alertBanner.classList.add('show');
+                return;
+            }
 
             switch (state.status) {
                 case 'streaming_app':
@@ -1277,7 +1422,27 @@
         }
 
         // 設定の保存
-        async function saveConfig() {
+        async function saveConfig(button, feedbackId) {
+            const feedback = document.getElementById(feedbackId);
+            const saveButtons = [
+                document.getElementById('btn-apply-window'),
+                document.getElementById('btn-apply-advanced')
+            ];
+            const defaultLabel = button.dataset.defaultLabel || button.textContent;
+            button.dataset.defaultLabel = defaultLabel;
+            saveButtons.forEach(item => {
+                if (item.dataset.defaultLabel) {
+                    item.textContent = item.dataset.defaultLabel;
+                }
+                item.disabled = true;
+            });
+            button.textContent = '適用中…';
+            feedback.className = 'config-feedback';
+            feedback.textContent = '設定を保存しています…';
+            if (configFeedbackTimer !== null) {
+                clearTimeout(configFeedbackTimer);
+                configFeedbackTimer = null;
+            }
             try {
                 const response = await fetch('/api/config', {
                     method: 'POST',
@@ -1291,15 +1456,32 @@
                     })
                 });
                 const data = await response.json();
-                if (data.status === 'success') {
-                    alert('設定を適用しました！');
-                    checkStatus();
-                } else {
-                    alert('設定の保存に失敗しました: ' + data.message);
+                if (!response.ok || data.status !== 'success') {
+                    throw new Error(data.message || '設定を保存できませんでした');
                 }
+                button.textContent = '✓ 適用しました';
+                feedback.className = 'config-feedback success';
+                feedback.textContent = feedbackId === 'window-config-feedback'
+                    ? `「${winInput.value || '未選択'}」をキャプチャ対象にしました`
+                    : '詳細設定を適用しました';
+                await checkStatus();
+                configFeedbackTimer = setTimeout(() => {
+                    button.textContent = defaultLabel;
+                    configFeedbackTimer = null;
+                }, 1800);
             } catch (error) {
                 console.error('Error saving config:', error);
-                alert('通信エラーが発生しました');
+                button.textContent = '再試行';
+                feedback.className = 'config-feedback error';
+                feedback.textContent = `適用できませんでした: ${error.message}`;
+                configFeedbackTimer = setTimeout(() => {
+                    button.textContent = defaultLabel;
+                    configFeedbackTimer = null;
+                }, 3000);
+            } finally {
+                saveButtons.forEach(item => {
+                    item.disabled = false;
+                });
             }
         }
 
