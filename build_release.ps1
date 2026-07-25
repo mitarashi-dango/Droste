@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Path $stagePath | Out-Null
 $releaseFiles = @(
     'VERSION',
     'README.md',
+    'START-HERE.txt',
     'app.py',
     'tls_utils.py',
     'requirements.txt',

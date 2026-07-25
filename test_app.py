@@ -290,6 +290,7 @@ class DistributionAssetTests(unittest.TestCase):
             build_script = file.read()
 
         self.assertIn('$releaseName = "Droste-$version-windows-x64"', build_script)
+        self.assertIn("'START-HERE.txt'", build_script)
         self.assertIn("'regain.bat'", build_script)
         self.assertNotIn("'run_test.bat'", build_script)
         self.assertIn("'create_shortcut.ps1'", build_script)
@@ -304,6 +305,16 @@ class DistributionAssetTests(unittest.TestCase):
         self.assertIn("'Droste.lnk'", shortcut_script)
         self.assertIn("'regain.bat'", shortcut_script)
         self.assertIn("'droste.ico'", shortcut_script)
+
+        guide_path = os.path.join(
+            base_directory,
+            "START-HERE.txt",
+        )
+        with open(guide_path, "r", encoding="utf-8") as file:
+            guide = file.read()
+        self.assertIn("setup.bat", guide)
+        self.assertIn("regain.bat", guide)
+        self.assertIn("ホーム画面に追加", guide)
 
 
 if __name__ == "__main__":
