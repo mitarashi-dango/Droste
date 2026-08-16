@@ -8,5 +8,8 @@ vendor/*.exe
 config.json
 devices.json
 devices.json.tmp
+chat.json
+chat.json.tmp
 tls/
 *.log
+d2.jpg

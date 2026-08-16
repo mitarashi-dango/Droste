@@ -16,12 +16,20 @@ class AppRouteTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.original_config_path = app.CONFIG_PATH
         self.original_registry_path = app.DEVICE_REGISTRY_PATH
+        self.original_chat_history_path = app.CHAT_HISTORY_PATH
         app.CONFIG_PATH = os.path.join(self.temporary_directory.name, "config.json")
         app.DEVICE_REGISTRY_PATH = os.path.join(
             self.temporary_directory.name,
             "devices.json",
         )
+        app.CHAT_HISTORY_PATH = os.path.join(
+            self.temporary_directory.name,
+            "chat.json",
+        )
         app._devices.clear()
+        app._chat_messages.clear()
+        app._chat_next_id = 1
+        app._chat_group_name = app.DEFAULT_CHAT_GROUP_NAME
         app._pairing_sessions.clear()
         app._pairing_requests.clear()
         app._rate_limit_events.clear()
@@ -33,7 +41,11 @@ class AppRouteTests(unittest.TestCase):
     def tearDown(self):
         app.CONFIG_PATH = self.original_config_path
         app.DEVICE_REGISTRY_PATH = self.original_registry_path
+        app.CHAT_HISTORY_PATH = self.original_chat_history_path
         app._devices.clear()
+        app._chat_messages.clear()
+        app._chat_next_id = 1
+        app._chat_group_name = app.DEFAULT_CHAT_GROUP_NAME
         app._pairing_sessions.clear()
         app._pairing_requests.clear()
         app._rate_limit_events.clear()
@@ -41,6 +53,17 @@ class AppRouteTests(unittest.TestCase):
         app._guest_stream_total = 0
         app.streamer.set_paused(False)
         self.temporary_directory.cleanup()
+
+    def authorize_guest(self, device_id="device-1", name="Test phone"):
+        token = "test-device-token"
+        app._devices[device_id] = {
+            "id": device_id,
+            "name": name,
+            "token_hash": app.hash_secret(token),
+            "created_at": app.utc_iso(),
+            "last_seen_timestamp": 0,
+        }
+        self.client.set_cookie(app.DEVICE_COOKIE_NAME, token)
 
     def test_management_api_is_local_only(self):
         local_response = self.client.get(
@@ -184,6 +207,151 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
         self.assertIn("max-age=", response.headers["Strict-Transport-Security"])
+
+    def test_group_chat_is_shared_by_host_and_registered_devices(self):
+        host_response = self.client.post(
+            "/api/chat/messages",
+            json={"text": "  <b>ホストから</b>  "},
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        self.assertEqual(host_response.status_code, 201)
+        host_message = host_response.get_json()["message"]
+        self.assertEqual(host_message["text"], "<b>ホストから</b>")
+        self.assertEqual(host_message["sender"]["name"], "ホストPC")
+        self.assertIs(host_message["sender"]["is_host"], True)
+
+        self.authorize_guest(name="リビングのスマホ")
+        guest_messages_response = self.client.get(
+            "/api/chat/messages",
+            base_url="https://localhost:5443",
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+        self.assertEqual(guest_messages_response.status_code, 200)
+        guest_messages = guest_messages_response.get_json()
+        self.assertEqual(guest_messages["participant"]["name"], "リビングのスマホ")
+        self.assertEqual(guest_messages["messages"], [host_message])
+
+        guest_response = self.client.post(
+            "/api/chat/messages",
+            json={"text": "スマホから返信"},
+            base_url="https://localhost:5443",
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+        self.assertEqual(guest_response.status_code, 201)
+        guest_message = guest_response.get_json()["message"]
+        self.assertEqual(guest_message["sender"]["name"], "リビングのスマホ")
+        self.assertIs(guest_message["sender"]["is_host"], False)
+
+        incremental_response = self.client.get(
+            f"/api/chat/messages?after={host_message['id']}",
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        self.assertEqual(
+            incremental_response.get_json()["messages"],
+            [guest_message],
+        )
+        with open(app.CHAT_HISTORY_PATH, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+        self.assertEqual(len(saved["messages"]), 2)
+
+    def test_group_chat_rejects_unregistered_or_invalid_messages(self):
+        unauthorized_response = self.client.get(
+            "/api/chat/messages",
+            base_url="https://localhost:5443",
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+        self.assertEqual(unauthorized_response.status_code, 401)
+
+        empty_response = self.client.post(
+            "/api/chat/messages",
+            json={"text": " \n "},
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        long_response = self.client.post(
+            "/api/chat/messages",
+            json={"text": "a" * (app.MAX_CHAT_MESSAGE_LENGTH + 1)},
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        self.assertEqual(empty_response.status_code, 400)
+        self.assertEqual(long_response.status_code, 400)
+
+    def test_only_host_can_change_group_chat_name(self):
+        host_response = self.client.patch(
+            "/api/chat/group",
+            json={"name": "  発表会 チーム  "},
+            base_url="http://localhost:5000",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        self.assertEqual(host_response.status_code, 200)
+        self.assertEqual(host_response.get_json()["group"]["name"], "発表会 チーム")
+
+        self.authorize_guest()
+        guest_messages_response = self.client.get(
+            "/api/chat/messages",
+            base_url="https://localhost:5443",
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+        guest_messages = guest_messages_response.get_json()
+        self.assertEqual(guest_messages["group"]["name"], "発表会 チーム")
+        self.assertIs(guest_messages["group"]["can_edit"], False)
+
+        guest_update_response = self.client.patch(
+            "/api/chat/group",
+            json={"name": "変更できない名前"},
+            base_url="https://localhost:5443",
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+        self.assertEqual(guest_update_response.status_code, 403)
+        with open(app.CHAT_HISTORY_PATH, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+        self.assertEqual(saved["group_name"], "発表会 チーム")
+
+    def test_group_chat_blocks_cross_origin_guest_posts(self):
+        self.authorize_guest()
+        response = self.client.post(
+            "/api/chat/messages",
+            json={"text": "blocked"},
+            base_url="https://localhost:5443",
+            headers={
+                "Origin": "https://attacker.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+            environ_base={"REMOTE_ADDR": "192.168.1.25"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_group_chat_restores_only_the_latest_200_messages(self):
+        messages = [
+            {
+                "id": message_id,
+                "sender": {
+                    "id": "host",
+                    "name": "ホストPC",
+                    "is_host": True,
+                },
+                "text": f"message {message_id}",
+                "created_at": "2026-08-16T00:00:00Z",
+            }
+            for message_id in range(1, app.MAX_CHAT_MESSAGES + 6)
+        ]
+        with open(app.CHAT_HISTORY_PATH, "w", encoding="utf-8") as file:
+            json.dump(
+                {"group_name": "保存済みグループ", "messages": messages},
+                file,
+                ensure_ascii=False,
+            )
+
+        app.load_chat_history()
+
+        self.assertEqual(len(app._chat_messages), app.MAX_CHAT_MESSAGES)
+        self.assertEqual(app._chat_messages[0]["id"], 6)
+        self.assertEqual(app._chat_messages[-1]["id"], 205)
+        self.assertEqual(app._chat_next_id, 206)
+        self.assertEqual(app._chat_group_name, "保存済みグループ")
 
     def test_pairing_request_is_rate_limited(self):
         responses = [
@@ -329,6 +497,130 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("詳細設定を適用", index_html)
         self.assertNotIn("alert('設定を適用しました", index_html)
 
+    def test_group_chat_ui_has_shared_messages_and_140_character_limit(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        self.assertIn('id="chat-panel"', index_html)
+        self.assertIn('id="chat-group-form"', index_html)
+        self.assertIn('id="chat-group-input"', index_html)
+        self.assertIn('id="chat-message-list"', index_html)
+        self.assertIn('maxlength="140"', index_html)
+        self.assertIn("const CHAT_MESSAGE_LIMIT = 140", index_html)
+        self.assertIn("fetch(`/api/chat/messages?after=${chatAfterId}`)", index_html)
+        self.assertIn("fetch('/api/chat/messages'", index_html)
+        self.assertIn("fetch('/api/chat/group'", index_html)
+        self.assertIn("chatGroupForm.hidden = group.can_edit !== true", index_html)
+        self.assertIn("text.textContent = message.text || ''", index_html)
+        self.assertNotIn("innerHTML = message.text", index_html)
+
+    def test_mobile_chat_switch_expands_without_opening_keyboard(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        switch_start = index_html.index("async function setMobileView(view)")
+        switch_end = index_html.index("mobileViewButtons.forEach", switch_start)
+        mobile_view_switch = index_html[switch_start:switch_end]
+
+        self.assertIn("chatInput.blur()", mobile_view_switch)
+        self.assertIn("chatGroupInput.blur()", mobile_view_switch)
+        self.assertIn("chatPanel.open = true", mobile_view_switch)
+        self.assertNotIn("chatInput.focus", mobile_view_switch)
+
+    def test_mobile_portrait_ui_uses_readable_text_and_touch_target_sizes(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        mobile_css_start = index_html.index("@media (max-width: 560px)")
+        mobile_css_end = index_html.index("</style>", mobile_css_start)
+        mobile_css = index_html[mobile_css_start:mobile_css_end]
+
+        self.assertIn("font-size: 1.05rem", mobile_css)
+        self.assertIn("font-size: 1rem", mobile_css)
+        self.assertIn("min-height: 52px", mobile_css)
+        self.assertIn("min-height: 44px", mobile_css)
+        self.assertIn("height: 46px", mobile_css)
+        self.assertIn("font-size: 0.95rem", mobile_css)
+        self.assertIn("inset: 65px 0 0", mobile_css)
+        self.assertGreaterEqual(
+            mobile_css.count("grid-template-columns: minmax(0, 1fr)"),
+            4,
+        )
+        self.assertIn("@media (max-width: 340px)", mobile_css)
+        self.assertIn("grid-template-rows: 46px 46px", mobile_css)
+
+    def test_workbench_rail_switches_desktop_and_mobile_views(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        self.assertIn('body[data-mobile-view="live"] .chat-panel', index_html)
+        self.assertIn('body[data-mobile-view="chat"] .viewer-container', index_html)
+        self.assertIn('body[data-mobile-view="settings"] .chat-panel', index_html)
+
+        switch_start = index_html.index("async function setMobileView(view)")
+        switch_end = index_html.index("mobileViewButtons.forEach", switch_start)
+        mobile_view_switch = index_html[switch_start:switch_end]
+        self.assertIn("if (debugPanel.classList.contains('show'))", mobile_view_switch)
+        self.assertNotIn(
+            "debugPanel.classList.contains('show') && mobileViewMedia.matches",
+            mobile_view_switch,
+        )
+
+        toggle_start = index_html.index("async function toggleDebugPanel()")
+        toggle_end = index_html.index("function startPairingPolling", toggle_start)
+        debug_toggle = index_html[toggle_start:toggle_end]
+        self.assertIn("applyMobileViewState('settings')", debug_toggle)
+        self.assertIn("applyMobileViewState('overview')", debug_toggle)
+
+    def test_host_only_settings_rail_cannot_leave_guests_on_a_blank_view(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        self.assertIn(
+            'id="rail-settings" type="button" data-mobile-view-target="settings" '
+            'aria-pressed="false" hidden',
+            index_html,
+        )
+        self.assertIn("mobileSettingsButton.hidden = !canConfigure", index_html)
+        self.assertIn("if (view === 'settings' && !canConfigureHost)", index_html)
+        self.assertIn("if (!canConfigure) closeSettingsView()", index_html)
+        self.assertIn(
+            "if (!event.matches) setMobileView('overview')",
+            index_html,
+        )
+
+        close_start = index_html.index("function closeSettingsView()")
+        close_end = index_html.index("function updateSettingsAvailability", close_start)
+        close_settings = index_html[close_start:close_end]
+        self.assertIn("debugPanel.classList.remove('show')", close_settings)
+        self.assertIn("stopPairingPolling()", close_settings)
+        self.assertIn("applyMobileViewState('overview')", close_settings)
+
     def test_iphone_and_android_support_one_tap_home_screen_launch(self):
         base_directory = os.path.dirname(__file__)
         with open(
@@ -379,17 +671,19 @@ class FrontendAssetTests(unittest.TestCase):
     def test_droste_icons_have_required_sizes(self):
         base_directory = os.path.dirname(__file__)
         with Image.open(
-            os.path.join(base_directory, "static", "icon-180.png")
+            os.path.join(base_directory, "static", "droste-icon-180.png")
         ) as icon_180:
             self.assertEqual(icon_180.size, (180, 180))
         with Image.open(
-            os.path.join(base_directory, "static", "icon-192.png")
+            os.path.join(base_directory, "static", "droste-icon-192.png")
         ) as icon_192:
             self.assertEqual(icon_192.size, (192, 192))
         with Image.open(
-            os.path.join(base_directory, "static", "icon-512.png")
+            os.path.join(base_directory, "static", "droste-icon-512.png")
         ) as icon_512:
             self.assertEqual(icon_512.size, (512, 512))
+        for legacy_name in ("icon-180.png", "icon-192.png", "icon-512.png"):
+            self.assertFalse(os.path.exists(os.path.join(base_directory, "static", legacy_name)))
         with Image.open(os.path.join(base_directory, "droste.ico")) as windows_icon:
             self.assertEqual(windows_icon.format, "ICO")
             self.assertIn((256, 256), windows_icon.info["sizes"])

@@ -1,11 +1,11 @@
-const CACHE_NAME = 'droste-stream-v11';
+const CACHE_NAME = 'droste-stream-v19';
 const ASSETS = [
   '/static/index.html',
   '/static/pair.html',
   '/static/manifest.json',
-  '/static/icon-180.png',
-  '/static/icon-192.png',
-  '/static/icon-512.png'
+  '/static/droste-icon-180.png',
+  '/static/droste-icon-192.png',
+  '/static/droste-icon-512.png'
 ];
 
 self.addEventListener('install', (e) => {

@@ -90,6 +90,10 @@ DEVICE_REGISTRY_PATH = os.environ.get(
     "DROSTE_DEVICE_REGISTRY_PATH",
     os.path.join(BASE_DIRECTORY, "devices.json"),
 )
+CHAT_HISTORY_PATH = os.environ.get(
+    "DROSTE_CHAT_HISTORY_PATH",
+    os.path.join(BASE_DIRECTORY, "chat.json"),
+)
 TLS_BASE_DIRECTORY = os.environ.get(
     "DROSTE_TLS_DIRECTORY",
     BASE_DIRECTORY,
@@ -102,9 +106,17 @@ PAIRING_TTL_SECONDS = 120
 PAIRING_CLAIM_TTL_SECONDS = 300
 MAX_STREAMS_PER_DEVICE = 2
 MAX_TOTAL_GUEST_STREAMS = 16
+MAX_CHAT_MESSAGES = 200
+MAX_CHAT_MESSAGE_LENGTH = 140
+MAX_CHAT_GROUP_NAME_LENGTH = 30
+DEFAULT_CHAT_GROUP_NAME = "グループチャット"
 
 _device_lock = threading.RLock()
 _devices = {}
+_chat_lock = threading.RLock()
+_chat_messages = deque(maxlen=MAX_CHAT_MESSAGES)
+_chat_next_id = 1
+_chat_group_name = DEFAULT_CHAT_GROUP_NAME
 _pairing_lock = threading.RLock()
 _pairing_sessions = {}
 _pairing_requests = {}
@@ -204,6 +216,18 @@ def sanitize_device_name(value):
     return name or "スマートフォン"
 
 
+def sanitize_chat_text(value):
+    if not isinstance(value, str):
+        return ""
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def sanitize_chat_group_name(value):
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())
+
+
 def load_device_registry():
     with _device_lock:
         _devices.clear()
@@ -230,6 +254,74 @@ def save_device_registry_locked():
     with open(temporary_path, "w", encoding="utf-8") as file:
         json.dump(payload, file, indent=2, ensure_ascii=False)
     os.replace(temporary_path, DEVICE_REGISTRY_PATH)
+
+
+def load_chat_history():
+    global _chat_group_name, _chat_next_id
+    with _chat_lock:
+        _chat_messages.clear()
+        _chat_next_id = 1
+        _chat_group_name = DEFAULT_CHAT_GROUP_NAME
+        try:
+            if not os.path.exists(CHAT_HISTORY_PATH):
+                return
+            with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+            loaded_group_name = sanitize_chat_group_name(
+                payload.get("group_name") if isinstance(payload, dict) else None
+            )
+            if 0 < len(loaded_group_name) <= MAX_CHAT_GROUP_NAME_LENGTH:
+                _chat_group_name = loaded_group_name
+            entries = payload.get("messages", []) if isinstance(payload, dict) else []
+            valid_messages = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    message_id = int(entry.get("id", 0))
+                except (TypeError, ValueError):
+                    continue
+                sender = entry.get("sender")
+                text = sanitize_chat_text(entry.get("text"))
+                created_at = str(entry.get("created_at", "")).strip()
+                if (
+                    message_id < 1
+                    or not isinstance(sender, dict)
+                    or not str(sender.get("id", "")).strip()
+                    or not str(sender.get("name", "")).strip()
+                    or not text
+                    or len(text) > MAX_CHAT_MESSAGE_LENGTH
+                    or not created_at
+                ):
+                    continue
+                valid_messages.append({
+                    "id": message_id,
+                    "sender": {
+                        "id": str(sender["id"]),
+                        "name": sanitize_device_name(sender["name"]),
+                        "is_host": bool(sender.get("is_host", False)),
+                    },
+                    "text": text,
+                    "created_at": created_at,
+                })
+            valid_messages.sort(key=lambda message: message["id"])
+            for message in valid_messages[-MAX_CHAT_MESSAGES:]:
+                _chat_messages.append(message)
+            if _chat_messages:
+                _chat_next_id = _chat_messages[-1]["id"] + 1
+        except Exception as error:
+            logger.error("Failed to load chat history: %s", error, exc_info=True)
+
+
+def save_chat_history_locked():
+    temporary_path = CHAT_HISTORY_PATH + ".tmp"
+    payload = {
+        "group_name": _chat_group_name,
+        "messages": list(_chat_messages),
+    }
+    with open(temporary_path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2, ensure_ascii=False)
+    os.replace(temporary_path, CHAT_HISTORY_PATH)
 
 
 def public_device(device):
@@ -355,6 +447,7 @@ def cleanup_pairings_locked():
 
 
 load_device_registry()
+load_chat_history()
 
 
 def is_self_window_title(title):
@@ -914,6 +1007,23 @@ def require_local_request():
     }), 403
 
 
+def get_chat_participant():
+    if is_local_request():
+        return {
+            "id": "host",
+            "name": "ホストPC",
+            "is_host": True,
+        }
+    device = get_authenticated_device()
+    if device is None:
+        return None
+    return {
+        "id": f"device:{device['id']}",
+        "name": device["name"],
+        "is_host": False,
+    }
+
+
 @app.route('/')
 def index():
     return redirect('/static/index.html')
@@ -1017,6 +1127,133 @@ def api_auth_status():
         "device": device,
         "requires_pairing": device is None,
     }), 200 if device else 401
+
+
+@app.route('/api/chat/messages', methods=['GET', 'POST'])
+def api_chat_messages():
+    participant = get_chat_participant()
+    if participant is None:
+        return authentication_required_response()
+
+    if request.method == 'GET':
+        try:
+            after_id = int(request.args.get("after", "0"))
+        except (TypeError, ValueError):
+            return jsonify({
+                "status": "error",
+                "message": "afterには0以上のメッセージIDを指定してください",
+            }), 400
+        if after_id < 0:
+            return jsonify({
+                "status": "error",
+                "message": "afterには0以上のメッセージIDを指定してください",
+            }), 400
+        with _chat_lock:
+            messages = [
+                message for message in _chat_messages
+                if message["id"] > after_id
+            ]
+            latest_id = _chat_messages[-1]["id"] if _chat_messages else 0
+            group_name = _chat_group_name
+        return jsonify({
+            "status": "success",
+            "participant": participant,
+            "group": {
+                "name": group_name,
+                "can_edit": participant["is_host"],
+            },
+            "messages": messages,
+            "latest_id": latest_id,
+        })
+
+    if not same_origin_request():
+        return security_error("Cross-origin chat request was blocked", 403)
+    limited = rate_limit_response(
+        f"chat-send:{participant['id']}",
+        20,
+        60,
+    )
+    if limited:
+        return limited
+
+    data = request.get_json(silent=True) or {}
+    text = sanitize_chat_text(data.get("text"))
+    if not text:
+        return jsonify({
+            "status": "error",
+            "message": "メッセージを入力してください",
+        }), 400
+    if len(text) > MAX_CHAT_MESSAGE_LENGTH:
+        return jsonify({
+            "status": "error",
+            "message": f"メッセージは{MAX_CHAT_MESSAGE_LENGTH}文字以内で入力してください",
+        }), 400
+
+    global _chat_next_id
+    with _chat_lock:
+        previous_messages = list(_chat_messages)
+        message = {
+            "id": _chat_next_id,
+            "sender": participant,
+            "text": text,
+            "created_at": utc_iso(),
+        }
+        _chat_messages.append(message)
+        try:
+            save_chat_history_locked()
+        except Exception as error:
+            _chat_messages.clear()
+            _chat_messages.extend(previous_messages)
+            logger.error("Failed to save chat message: %s", error, exc_info=True)
+            return jsonify({
+                "status": "error",
+                "message": "メッセージを保存できませんでした",
+            }), 500
+        _chat_next_id += 1
+    return jsonify({
+        "status": "success",
+        "message": message,
+    }), 201
+
+
+@app.route('/api/chat/group', methods=['PATCH'])
+def api_chat_group():
+    local_error = require_local_request()
+    if local_error:
+        return local_error
+    data = request.get_json(silent=True) or {}
+    name = sanitize_chat_group_name(data.get("name"))
+    if not name:
+        return jsonify({
+            "status": "error",
+            "message": "グループ名を入力してください",
+        }), 400
+    if len(name) > MAX_CHAT_GROUP_NAME_LENGTH:
+        return jsonify({
+            "status": "error",
+            "message": f"グループ名は{MAX_CHAT_GROUP_NAME_LENGTH}文字以内で入力してください",
+        }), 400
+
+    global _chat_group_name
+    with _chat_lock:
+        previous_name = _chat_group_name
+        _chat_group_name = name
+        try:
+            save_chat_history_locked()
+        except Exception as error:
+            _chat_group_name = previous_name
+            logger.error("Failed to save chat group name: %s", error, exc_info=True)
+            return jsonify({
+                "status": "error",
+                "message": "グループ名を保存できませんでした",
+            }), 500
+    return jsonify({
+        "status": "success",
+        "group": {
+            "name": name,
+            "can_edit": True,
+        },
+    })
 
 
 @app.route('/api/pairing/start', methods=['POST'])

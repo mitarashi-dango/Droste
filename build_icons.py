@@ -12,15 +12,15 @@ def main():
     with Image.open(SOURCE) as source:
         icon = source.convert("RGBA")
         icon.resize((180, 180), Image.Resampling.LANCZOS).save(
-            STATIC / "icon-180.png",
+            STATIC / "droste-icon-180.png",
             optimize=True,
         )
         icon.resize((512, 512), Image.Resampling.LANCZOS).save(
-            STATIC / "icon-512.png",
+            STATIC / "droste-icon-512.png",
             optimize=True,
         )
         icon.resize((192, 192), Image.Resampling.LANCZOS).save(
-            STATIC / "icon-192.png",
+            STATIC / "droste-icon-192.png",
             optimize=True,
         )
         icon.save(
