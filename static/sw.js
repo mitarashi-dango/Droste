@@ -1,4 +1,4 @@
-const CACHE_NAME = 'droste-stream-v10';
+const CACHE_NAME = 'droste-stream-v11';
 const ASSETS = [
   '/static/index.html',
   '/static/pair.html',

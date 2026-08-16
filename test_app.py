@@ -329,7 +329,7 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("詳細設定を適用", index_html)
         self.assertNotIn("alert('設定を適用しました", index_html)
 
-    def test_iphone_home_screen_supports_one_tap_launch(self):
+    def test_iphone_and_android_support_one_tap_home_screen_launch(self):
         base_directory = os.path.dirname(__file__)
         with open(
             os.path.join(base_directory, "static", "manifest.json"),
@@ -352,9 +352,29 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("ホーム画面に追加", index_html)
         self.assertIn('apple-touch-icon" sizes="180x180"', index_html)
         self.assertIn("updateHomeScreenCard", index_html)
-        self.assertNotIn("beforeinstallprompt", index_html)
-        self.assertNotIn("Drosteをインストール", index_html)
+        self.assertIn("isIosDevice", index_html)
+        self.assertIn("isAndroidDevice", index_html)
+        self.assertIn("beforeinstallprompt", index_html)
+        self.assertIn("Drosteをインストール", index_html)
+        self.assertIn("アプリをインストール", index_html)
         self.assertIn("@media (display-mode: standalone)", index_html)
+        self.assertNotIn("fonts.googleapis.com", index_html)
+
+    def test_tls_setup_has_platform_specific_certificate_guidance(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "setup.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            setup_html = file.read()
+
+        self.assertIn('id="setup-ios"', setup_html)
+        self.assertIn('id="setup-android"', setup_html)
+        self.assertIn('/tls/droste-ca.mobileconfig', setup_html)
+        self.assertIn('/tls/droste-ca.crt', setup_html)
+        self.assertIn("Android版Chrome", setup_html)
+        self.assertIn("CA証明書をインストール", setup_html)
 
     def test_droste_icons_have_required_sizes(self):
         base_directory = os.path.dirname(__file__)

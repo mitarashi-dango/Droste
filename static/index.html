@@ -4,17 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Droste</title>
-    <!-- iOS PWA Meta Tags -->
+    <!-- iPhone / iPad and Android home-screen app metadata -->
+    <meta name="theme-color" content="#0b0f19">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Droste">
     <link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180.png">
     <link rel="manifest" href="/static/manifest.json">
-
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <style>
         :root {
@@ -43,7 +39,7 @@
         }
 
         body {
-            font-family: 'Outfit', sans-serif;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             background-color: var(--bg-color);
             color: var(--text-color);
             min-height: 100vh;
@@ -238,8 +234,21 @@
             line-height: 1.5;
         }
 
+        .home-screen-install-btn {
+            margin-top: 10px;
+            padding: 10px 16px;
+            border: 0;
+            border-radius: 9px;
+            color: #001114;
+            background: var(--accent-color);
+            font: inherit;
+            font-size: 0.85rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
         /*
-         * iPhoneのホーム画面から起動した場合は、JavaScriptの判定を
+         * ホーム画面アプリとして起動した場合は、JavaScriptの判定を
          * 待たずにホーム画面追加の案内を隠す。
          */
         @media (display-mode: standalone), (display-mode: minimal-ui),
@@ -791,7 +800,8 @@
         </div>
 
         <div class="home-screen-card" id="home-screen-card" hidden>
-            <p>iPhoneではSafariの共有ボタンから「ホーム画面に追加」を選ぶと、次回からDrosteアイコンを1回タップするだけで開けます。</p>
+            <p id="home-screen-message"></p>
+            <button class="home-screen-install-btn" id="home-screen-install-btn" type="button" hidden>Drosteをインストール</button>
         </div>
 
         <!-- デバッグ設定パネル (折りたたみ式) -->
@@ -898,6 +908,8 @@
         const streamImg = document.getElementById('stream-img');
         const controlsRow = document.getElementById('controls-row');
         const homeScreenCard = document.getElementById('home-screen-card');
+        const homeScreenMessage = document.getElementById('home-screen-message');
+        const homeScreenInstallBtn = document.getElementById('home-screen-install-btn');
 
         let currentMode = 'app';
         let isPaused = false;
@@ -906,6 +918,7 @@
         let requiresPairing = false;
         let pairingPollTimer = null;
         let isRegisteredGuest = false;
+        let deferredInstallPrompt = null;
         const APP_DISPLAY_MODES = [
             'standalone',
             'minimal-ui',
@@ -925,13 +938,54 @@
                 || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
         }
 
+        function isAndroidDevice() {
+            return /android/i.test(navigator.userAgent);
+        }
+
         function updateHomeScreenCard() {
-            homeScreenCard.hidden = !(
+            const ios = isIosDevice();
+            const android = isAndroidDevice();
+            const shouldShow = (
                 isRegisteredGuest
-                && isIosDevice()
+                && (ios || android)
                 && !isStandaloneApp()
             );
+            homeScreenCard.hidden = !shouldShow;
+            homeScreenInstallBtn.hidden = true;
+            if (!shouldShow) return;
+
+            if (ios) {
+                homeScreenMessage.textContent = 'Safariの共有ボタンから「ホーム画面に追加」を選ぶと、次回からDrosteアイコンで開けます。';
+                return;
+            }
+
+            if (deferredInstallPrompt) {
+                homeScreenMessage.textContent = 'DrosteをAndroidのホーム画面アプリとして追加できます。';
+                homeScreenInstallBtn.hidden = false;
+            } else {
+                homeScreenMessage.textContent = 'Chrome右上の「⋮」から「ホーム画面に追加」または「アプリをインストール」を選んでください。';
+            }
         }
+
+        homeScreenInstallBtn.addEventListener('click', async () => {
+            if (!deferredInstallPrompt) return;
+            const promptEvent = deferredInstallPrompt;
+            deferredInstallPrompt = null;
+            await promptEvent.prompt();
+            await promptEvent.userChoice;
+            updateHomeScreenCard();
+        });
+
+        window.addEventListener('beforeinstallprompt', (event) => {
+            event.preventDefault();
+            deferredInstallPrompt = event;
+            updateHomeScreenCard();
+        });
+
+        window.addEventListener('appinstalled', () => {
+            deferredInstallPrompt = null;
+            homeScreenCard.hidden = true;
+        });
 
         APP_DISPLAY_MODES.forEach((mode) => {
             const query = window.matchMedia(`(display-mode: ${mode})`);

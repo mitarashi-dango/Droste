@@ -8,7 +8,8 @@ Drosteはポータブルアプリです。Windowsへ通常のインストール�
 1. Windowsの通知領域にあるDrosteアイコンを右クリックし、
    「Drosteを終了」を選びます。
 
-2. 登録したiPhone / iPadでDrosteのホーム画面アイコンを削除します。
+2. 登録したiPhone / iPad / AndroidでDrosteのホーム画面
+   アイコンまたはインストール済みWebアプリを削除します。
 
 3. iPhone / iPadでDrosteの構成プロファイルを削除します。
 
@@ -18,12 +19,16 @@ Drosteはポータブルアプリです。Windowsへ通常のインストール�
    表示名や設定画面の場所はiOSのバージョンにより多少異なります。
    「Droste Local CA」が信頼済み証明書に残っていないことも確認してください。
 
-4. configure_firewall.ps1を使用したことがある場合だけ、管理者PowerShellで
+4. Androidでは設定アプリで「証明書」を検索し、ユーザー追加済みCAから
+   「Droste」または「Droste Local CA」を削除します。
+   設定名はAndroid端末のメーカーにより異なります。
+
+5. configure_firewall.ps1を使用したことがある場合だけ、管理者PowerShellで
    次を実行します。
 
    .\remove_firewall.ps1
 
-5. Droste.exeが入っているフォルダー全体を削除します。
+6. Droste.exeが入っているフォルダー全体を削除します。
 
 フォルダー内のtls、devices.json、config.jsonを削除すると、証明書、端末登録、
 設定は復元できません。必要な設定を確認してから削除してください。

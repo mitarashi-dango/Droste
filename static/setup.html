@@ -89,6 +89,24 @@
             line-height: 1.5;
             background: rgba(0, 0, 0, 0.2);
         }
+
+        .platform-section.recommended {
+            margin-top: 22px;
+            padding: 0 16px 16px;
+            border: 1px solid rgba(0, 240, 255, 0.35);
+            border-radius: 14px;
+            background: rgba(0, 240, 255, 0.05);
+        }
+
+        .platform-badge {
+            display: none;
+            margin-left: 8px;
+            color: var(--accent);
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+
+        .recommended .platform-badge { display: inline; }
     </style>
 </head>
 <body>
@@ -99,8 +117,8 @@
         <p>安全確認のため、次のSHA-256指紋がPC管理画面の表示と完全に一致することを確認してください。</p>
         <div class="fingerprint" id="fingerprint">証明書の指紋を読み込んでいます…</div>
 
-        <section>
-            <h2>iPhone / iPad</h2>
+        <section class="platform-section" id="setup-ios">
+            <h2>iPhone / iPad <span class="platform-badge">この端末向け</span></h2>
             <ol>
                 <li>下のボタンからプロファイルをダウンロードします。</li>
                 <li>「設定」→「プロファイルがダウンロード済み」からインストールします。</li>
@@ -109,14 +127,16 @@
             <a class="download" href="/tls/droste-ca.mobileconfig">iPhone用証明書を導入</a>
         </section>
 
-        <section>
-            <h2>Android</h2>
+        <section class="platform-section" id="setup-android">
+            <h2>Android版Chrome <span class="platform-badge">この端末向け</span></h2>
             <ol>
                 <li>下のボタンからCA証明書をダウンロードします。</li>
-                <li>端末の設定で「CA証明書をインストール」を選びます。</li>
+                <li>設定アプリで「証明書」を検索し、「CA証明書をインストール」からダウンロードしたファイルを選びます。</li>
                 <li>名前を求められたら「Droste」と入力します。</li>
+                <li>Chromeを閉じて開き直します。</li>
             </ol>
             <a class="download secondary" href="/tls/droste-ca.crt">Android用証明書を導入</a>
+            <p>設定名はメーカーにより異なります。端末の管理ポリシーでCA証明書を追加できない場合、その端末でDrosteは利用できません。</p>
         </section>
 
         <div class="done">
@@ -124,6 +144,21 @@
         </div>
     </main>
     <script>
+        const userAgent = navigator.userAgent;
+        const platformSection = /android/i.test(userAgent)
+            ? document.getElementById('setup-android')
+            : (/iphone|ipad|ipod/i.test(userAgent)
+                || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+                ? document.getElementById('setup-ios')
+                : null;
+        if (platformSection) {
+            platformSection.classList.add('recommended');
+            platformSection.parentElement.insertBefore(
+                platformSection,
+                platformSection.parentElement.querySelector('.platform-section')
+            );
+        }
+
         const fingerprint = document.getElementById('fingerprint');
         fetch('/api/tls/fingerprint')
             .then((response) => response.json())
