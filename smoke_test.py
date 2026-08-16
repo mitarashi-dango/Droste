@@ -41,7 +41,7 @@ def main():
         f"http://127.0.0.1:{http_port}/api/config"
     )
     config = json.loads(body)
-    if status != 200 or not config.get("tls_enabled"):
+    if status != 200 or "https_port" not in config:
         raise RuntimeError("The local management endpoint is not ready.")
 
     https_port = arguments.https_port or config["https_port"]

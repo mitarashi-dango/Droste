@@ -23,7 +23,21 @@ MENU_EXIT = 1002
 
 
 def project_path(*parts):
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+    base_directory = (
+        os.path.dirname(os.path.abspath(sys.executable))
+        if getattr(sys, "frozen", False)
+        else os.path.dirname(os.path.abspath(__file__))
+    )
+    return os.path.join(base_directory, *parts)
+
+
+def resource_path(*parts):
+    base_directory = getattr(
+        sys,
+        "_MEIPASS",
+        os.path.dirname(os.path.abspath(__file__)),
+    )
+    return os.path.join(base_directory, *parts)
 
 
 def management_url():
@@ -131,7 +145,7 @@ class DrosteTray:
         )
 
     def _load_icon(self):
-        icon_path = project_path("droste.ico")
+        icon_path = resource_path("droste.ico")
         return win32gui.LoadImage(
             0,
             icon_path,
@@ -146,28 +160,39 @@ class DrosteTray:
             self.open_management_page()
             return False
 
-        python_executable = project_path(".venv", "Scripts", "python.exe")
-        app_path = project_path("app.py")
-        if not os.path.isfile(python_executable):
-            raise FileNotFoundError("初期設定が終わっていません。setup.batを実行してください。")
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--server"]
+        else:
+            python_executable = project_path(".venv", "Scripts", "python.exe")
+            app_path = project_path("app.py")
+            if not os.path.isfile(python_executable):
+                raise FileNotFoundError("初期設定が終わっていません。setup.batを実行してください。")
+            command = [python_executable, app_path]
 
-        self.log_file = open(
-            project_path("droste.log"),
-            "a",
-            encoding="utf-8",
-            buffering=1,
-        )
-        self.log_file.write(
-            f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Droste starting\n"
-        )
         environment = os.environ.copy()
-        environment["ROOM_INDICATOR_NO_BROWSER"] = "1"
+        environment["DROSTE_NO_BROWSER"] = "1"
+        log_path = project_path("droste.log")
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(
+                f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Droste starting\n"
+            )
+        if getattr(sys, "frozen", False):
+            environment["DROSTE_LOG_PATH"] = log_path
+            child_output = subprocess.DEVNULL
+        else:
+            self.log_file = open(
+                log_path,
+                "a",
+                encoding="utf-8",
+                buffering=1,
+            )
+            child_output = self.log_file
         self.child = subprocess.Popen(
-            [python_executable, app_path],
+            command,
             cwd=project_path(),
             env=environment,
             stdin=subprocess.DEVNULL,
-            stdout=self.log_file,
+            stdout=child_output,
             stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -176,7 +201,8 @@ class DrosteTray:
         return True
 
     def _wait_for_server(self):
-        for _index in range(100):
+        # 初回はウイルス対策ソフトによる単体EXEの展開確認に時間がかかることがある。
+        for _index in range(300):
             if self.closing or self.child is None or self.child.poll() is not None:
                 return
             if server_is_ready(self.management_url):
@@ -249,11 +275,15 @@ class DrosteTray:
 
     def _on_child_exit(self, _hwnd, _message, exit_code, _lparam):
         if not self.closing:
+            if getattr(sys, "frozen", False):
+                diagnostic_hint = "同じフォルダーのdroste.logを確認してください。"
+            else:
+                diagnostic_hint = "regain.batを実行すると詳しいエラーを確認できます。"
             win32api.MessageBox(
                 self.hwnd,
                 (
                     "Drosteを起動できなかったか、予期せず終了しました。\n"
-                    "regain.batを実行すると詳しいエラーを確認できます。\n\n"
+                    f"{diagnostic_hint}\n\n"
                     f"終了コード: {exit_code}"
                 ),
                 APP_NAME,
@@ -283,6 +313,12 @@ class DrosteTray:
 
 
 def main():
+    if "--server" in sys.argv:
+        from app import run_server
+
+        run_server()
+        return
+
     if "--stop" in sys.argv:
         hwnd = win32gui.FindWindow("DrosteTrayWindow", "Droste")
         if hwnd:

@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $resolvedRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $targetPath = Join-Path $resolvedRoot '.venv\Scripts\pythonw.exe'
-$launcherPath = Join-Path $resolvedRoot 'droste_tray.pyw'
+$launcherPath = Join-Path $resolvedRoot 'droste_tray.py'
 $iconPath = Join-Path $resolvedRoot 'droste.ico'
 
 if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {

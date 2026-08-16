@@ -24,6 +24,7 @@ if ($existing) {
 try {
     New-NetFirewallRule `
         -DisplayName $ruleName `
+        -Group 'Droste' `
         -Description 'Allow Droste HTTPS only on a private local network.' `
         -Direction Inbound `
         -Action Allow `

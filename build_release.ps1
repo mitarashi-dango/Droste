@@ -1,5 +1,5 @@
 param(
-    [switch]$WithoutWheelhouse
+    [switch]$SkipExecutableBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,15 +9,8 @@ $distRoot = Join-Path $projectRoot 'dist'
 $releaseName = "Droste-$version-windows-x64"
 $stagePath = Join-Path $distRoot $releaseName
 $zipPath = Join-Path $distRoot "$releaseName.zip"
-$pythonVersion = '3.13.14'
-$pythonInstallerName = "python-$pythonVersion-amd64.exe"
-$pythonInstallerUrl = "https://www.python.org/ftp/python/$pythonVersion/$pythonInstallerName"
-$pythonInstallerSha256 = 'c54d9b9bbb8a36e6489363ddd01139707fd781d72f1f9e90c7ec65d0061368e0'
-$pythonLicenseUrl = 'https://raw.githubusercontent.com/python/cpython/v3.13.14/LICENSE'
-$pythonLicenseSha256 = '78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb'
-$vendorPath = Join-Path $projectRoot 'vendor'
-$pythonInstallerPath = Join-Path $vendorPath $pythonInstallerName
-$pythonLicensePath = Join-Path $vendorPath 'PYTHON-LICENSE.txt'
+$pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
+$executablePath = Join-Path $projectRoot 'build\executable\Droste.exe'
 
 $resolvedDistRoot = [System.IO.Path]::GetFullPath($distRoot)
 $resolvedStagePath = [System.IO.Path]::GetFullPath($stagePath)
@@ -28,6 +21,19 @@ if (-not $resolvedStagePath.StartsWith(
     throw 'Unsafe release staging path.'
 }
 
+if (-not $SkipExecutableBuild) {
+    & (Join-Path $projectRoot 'build_executable.ps1')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Droste.exe build failed.'
+    }
+}
+if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+    throw 'Droste.exe is missing. Run build_executable.ps1 first.'
+}
+if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+    throw 'Development environment is missing. Run setup.bat first.'
+}
+
 New-Item -ItemType Directory -Path $distRoot -Force | Out-Null
 if (Test-Path -LiteralPath $stagePath) {
     Remove-Item -LiteralPath $stagePath -Recurse -Force
@@ -35,101 +41,88 @@ if (Test-Path -LiteralPath $stagePath) {
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
+if (Test-Path -LiteralPath "$zipPath.sha256") {
+    Remove-Item -LiteralPath "$zipPath.sha256" -Force
+}
 New-Item -ItemType Directory -Path $stagePath | Out-Null
 
-$releaseFiles = @(
+Copy-Item -LiteralPath $executablePath -Destination (Join-Path $stagePath 'Droste.exe')
+foreach ($relativePath in @(
     'VERSION',
     'README.md',
     'START-HERE.txt',
-    'app.py',
-    'tls_utils.py',
-    'requirements.txt',
-    'requirements.lock.txt',
-    'setup.bat',
-    'regain.bat',
-    'droste_tray.pyw',
-    'create_shortcut.ps1',
-    'droste.ico',
+    'UNINSTALL.txt',
+    'SECURITY.md',
+    'THIRD-PARTY-NOTICES.txt',
     'configure_firewall.ps1',
-    'verify_wheelhouse.ps1',
-    'verify_python_installer.ps1'
-)
-foreach ($relativePath in $releaseFiles) {
+    'remove_firewall.ps1'
+)) {
     Copy-Item `
         -LiteralPath (Join-Path $projectRoot $relativePath) `
         -Destination (Join-Path $stagePath $relativePath)
 }
-Copy-Item `
-    -LiteralPath (Join-Path $projectRoot 'static') `
-    -Destination (Join-Path $stagePath 'static') `
-    -Recurse
 
-New-Item -ItemType Directory -Path $vendorPath -Force | Out-Null
-if (-not (Test-Path -LiteralPath $pythonInstallerPath)) {
-    Write-Host "Downloading official Python $pythonVersion 64-bit installer..."
-    Invoke-WebRequest `
-        -UseBasicParsing `
-        -Uri $pythonInstallerUrl `
-        -OutFile $pythonInstallerPath
+$licenseRoot = Join-Path $stagePath 'third-party-licenses'
+New-Item -ItemType Directory -Path $licenseRoot | Out-Null
+$pythonBase = (& $pythonPath -c 'import sys; print(sys.base_prefix)').Trim()
+$pythonLicense = Join-Path $pythonBase 'LICENSE.txt'
+if (-not (Test-Path -LiteralPath $pythonLicense -PathType Leaf)) {
+    throw "Python runtime license was not found: $pythonLicense"
 }
-$actualInstallerSha256 = (
-    Get-FileHash -LiteralPath $pythonInstallerPath -Algorithm SHA256
-).Hash.ToLowerInvariant()
-if ($actualInstallerSha256 -ne $pythonInstallerSha256) {
-    throw 'Python installer SHA-256 verification failed.'
-}
-$installerSignature = Get-AuthenticodeSignature -FilePath $pythonInstallerPath
-if ($installerSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
-    $null -eq $installerSignature.SignerCertificate -or
-    $installerSignature.SignerCertificate.Subject -notmatch 'CN=Python Software Foundation(?:,|$)') {
-    throw 'Python installer Authenticode verification failed.'
-}
+$pythonLicenseDirectory = Join-Path $licenseRoot 'Python'
+New-Item -ItemType Directory -Path $pythonLicenseDirectory | Out-Null
+Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $pythonLicenseDirectory 'LICENSE.txt')
 
-if (-not (Test-Path -LiteralPath $pythonLicensePath)) {
-    Write-Host 'Downloading the Python license...'
-    Invoke-WebRequest `
-        -UseBasicParsing `
-        -Uri $pythonLicenseUrl `
-        -OutFile $pythonLicensePath
-}
-$actualLicenseSha256 = (
-    Get-FileHash -LiteralPath $pythonLicensePath -Algorithm SHA256
-).Hash.ToLowerInvariant()
-if ($actualLicenseSha256 -ne $pythonLicenseSha256) {
-    throw 'Python license SHA-256 verification failed.'
-}
+$runtimeDistributions = @(
+    'blinker',
+    'cffi',
+    'cheroot',
+    'click',
+    'colorama',
+    'cryptography',
+    'Flask',
+    'itsdangerous',
+    'jaraco.functools',
+    'Jinja2',
+    'MarkupSafe',
+    'more-itertools',
+    'Pillow',
+    'pycparser',
+    'pywin32',
+    'qrcode',
+    'Werkzeug',
+    'PyInstaller',
+    'altgraph',
+    'packaging',
+    'pefile',
+    'pyinstaller-hooks-contrib',
+    'pywin32-ctypes',
+    'setuptools'
+)
 
-Copy-Item -LiteralPath $pythonInstallerPath -Destination (Join-Path $stagePath $pythonInstallerName)
-Copy-Item -LiteralPath $pythonLicensePath -Destination (Join-Path $stagePath 'PYTHON-LICENSE.txt')
-
-if (-not $WithoutWheelhouse) {
-    $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $pythonPath)) {
-        throw 'Run setup.bat before building a release.'
+foreach ($distributionName in $runtimeDistributions) {
+    $metadataPath = (& $pythonPath -c "import importlib.metadata as m; print(m.distribution('$distributionName')._path)").Trim()
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Container)) {
+        throw "Package metadata was not found: $distributionName"
     }
-    $wheelhousePath = Join-Path $stagePath 'wheelhouse'
-    New-Item -ItemType Directory -Path $wheelhousePath | Out-Null
-    & $pythonPath -m pip download `
-        --only-binary=:all: `
-        --platform win_amd64 `
-        --implementation cp `
-        --python-version 313 `
-        --abi cp313 `
-        --dest $wheelhousePath `
-        -r (Join-Path $projectRoot 'requirements.lock.txt')
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to build the dependency wheelhouse.'
+    $licenseFiles = @(
+        Get-ChildItem -LiteralPath $metadataPath -Recurse -File |
+            Where-Object {
+                $_.Name -match '^(LICENSE|COPYING|NOTICE)(\.|$)' -or
+                $_.DirectoryName -match '[\\/]licenses?([\\/]|$)'
+            }
+    )
+    if ($licenseFiles.Count -eq 0) {
+        throw "No license file was found for package: $distributionName"
     }
-    $wheelHashes = Get-ChildItem -LiteralPath $wheelhousePath -Filter '*.whl' -File |
-        Sort-Object Name |
-        ForEach-Object {
-            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $($_.Name)"
-        }
-    Set-Content `
-        -LiteralPath (Join-Path $stagePath 'wheelhouse.sha256') `
-        -Value $wheelHashes `
-        -Encoding ascii
+
+    $destinationRoot = Join-Path $licenseRoot $distributionName
+    foreach ($licenseFile in $licenseFiles) {
+        $relativePath = $licenseFile.FullName.Substring($metadataPath.Length).TrimStart('\', '/')
+        $destinationPath = Join-Path $destinationRoot $relativePath
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
+        Copy-Item -LiteralPath $licenseFile.FullName -Destination $destinationPath
+    }
 }
 
 Compress-Archive -LiteralPath $stagePath -DestinationPath $zipPath -CompressionLevel Optimal

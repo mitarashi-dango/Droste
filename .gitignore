@@ -1,6 +1,8 @@
 __pycache__/
 .venv/
 dist/
+build/
+*.spec
 vendor/*.exe
 *.py[cod]
 config.json

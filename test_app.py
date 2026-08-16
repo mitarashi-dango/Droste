@@ -57,6 +57,36 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(local_response.status_code, 200)
         self.assertEqual(remote_response.status_code, 403)
 
+    def test_legacy_internet_settings_are_ignored(self):
+        with open(app.CONFIG_PATH, "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "pairing_base_url": "https://public.example",
+                    "tls_enabled": False,
+                    "lan_ip": "203.0.113.10",
+                },
+                file,
+            )
+
+        config = app.load_config()
+
+        self.assertNotIn("pairing_base_url", config)
+        self.assertNotIn("tls_enabled", config)
+        self.assertEqual(config["lan_ip"], "")
+
+    def test_only_rfc1918_addresses_can_be_selected_for_lan(self):
+        for address in ("10.0.0.8", "172.16.20.3", "192.168.1.10"):
+            with self.subTest(address=address):
+                self.assertTrue(app.is_private_lan_ipv4(address))
+
+        for address in ("127.0.0.1", "169.254.1.3", "100.64.0.2", "8.8.8.8"):
+            with self.subTest(address=address):
+                self.assertFalse(app.is_private_lan_ipv4(address))
+
+    @mock.patch("app.get_lan_ip", return_value="192.168.1.10")
+    def test_guest_url_is_always_local_https(self, _get_lan_ip):
+        self.assertEqual(app.guest_base_url(), "https://192.168.1.10:5443")
+
     def test_local_auth_status_identifies_droste_for_the_tray_launcher(self):
         response = self.client.get(
             "/api/auth/status",
@@ -346,7 +376,7 @@ class FrontendAssetTests(unittest.TestCase):
 
 
 class DistributionAssetTests(unittest.TestCase):
-    def test_setup_prefers_python_313_and_verifies_bundled_installer(self):
+    def test_source_setup_prefers_python_313_and_verifies_bundled_installer(self):
         base_directory = os.path.dirname(__file__)
         with open(
             os.path.join(base_directory, "setup.bat"),
@@ -385,25 +415,27 @@ class DistributionAssetTests(unittest.TestCase):
 
         self.assertIn('$releaseName = "Droste-$version-windows-x64"', build_script)
         self.assertIn("'START-HERE.txt'", build_script)
-        self.assertIn("'regain.bat'", build_script)
-        self.assertIn("'droste_tray.pyw'", build_script)
-        self.assertNotIn("'run_test.bat'", build_script)
-        self.assertIn("'create_shortcut.ps1'", build_script)
-        self.assertIn("'droste.ico'", build_script)
+        self.assertIn("'UNINSTALL.txt'", build_script)
+        self.assertIn("'THIRD-PARTY-NOTICES.txt'", build_script)
+        self.assertIn("'SECURITY.md'", build_script)
+        self.assertIn("'Droste.exe'", build_script)
+        self.assertNotIn("'setup.bat'", build_script)
+        self.assertNotIn("python-3.13", build_script)
+        self.assertNotIn("wheelhouse", build_script)
 
         with open(
-            os.path.join(base_directory, "create_shortcut.ps1"),
+            os.path.join(base_directory, "build_executable.ps1"),
             "r",
             encoding="utf-8",
         ) as file:
-            shortcut_script = file.read()
-        self.assertIn("'Droste.lnk'", shortcut_script)
-        self.assertIn(r"'.venv\Scripts\pythonw.exe'", shortcut_script)
-        self.assertIn("'droste_tray.pyw'", shortcut_script)
-        self.assertIn("'droste.ico'", shortcut_script)
+            executable_builder = file.read()
+        self.assertIn("--onefile", executable_builder)
+        self.assertIn("--windowed", executable_builder)
+        self.assertIn("--name Droste", executable_builder)
+        self.assertIn("droste_tray.py", executable_builder)
 
         with open(
-            os.path.join(base_directory, "droste_tray.pyw"),
+            os.path.join(base_directory, "droste_tray.py"),
             "r",
             encoding="utf-8",
         ) as file:
@@ -412,7 +444,8 @@ class DistributionAssetTests(unittest.TestCase):
         self.assertIn("win32gui.Shell_NotifyIcon", tray_launcher)
         self.assertIn('"Drosteを終了"', tray_launcher)
         self.assertIn('"管理画面を開く"', tray_launcher)
-        self.assertIn("regain.bat", tray_launcher)
+        self.assertIn('[sys.executable, "--server"]', tray_launcher)
+        self.assertIn('if "--server" in sys.argv', tray_launcher)
 
         guide_path = os.path.join(
             base_directory,
@@ -420,10 +453,21 @@ class DistributionAssetTests(unittest.TestCase):
         )
         with open(guide_path, "r", encoding="utf-8") as file:
             guide = file.read()
-        self.assertIn("setup.bat", guide)
-        self.assertIn("regain.bat", guide)
+        self.assertIn("Droste.exe", guide)
+        self.assertNotIn("setup.batをダブルクリック", guide)
         self.assertIn("ホーム画面に追加", guide)
         self.assertIn("通知領域", guide)
+
+    def test_security_exception_is_not_reachable_from_droste_code(self):
+        base_directory = os.path.dirname(__file__)
+        for filename in ("app.py", "tls_utils.py"):
+            with open(
+                os.path.join(base_directory, filename),
+                "r",
+                encoding="utf-8",
+            ) as file:
+                source = file.read()
+            self.assertNotIn("pkcs7_decrypt_", source)
 
 
 if __name__ == "__main__":

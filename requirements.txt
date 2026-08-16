@@ -3,4 +3,4 @@ Pillow>=12,<13
 pywin32>=312
 qrcode[pil]>=8.2,<9
 cheroot>=11,<12
-cryptography>=48.0.1,<49
+cryptography>=49,<50

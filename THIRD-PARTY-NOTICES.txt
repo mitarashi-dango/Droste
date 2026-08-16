@@ -1,0 +1,48 @@
+Droste Third-Party Software Notices
+===================================
+
+The Windows executable contains the Python runtime, the PyInstaller bootloader,
+and the runtime packages pinned in requirements.lock.txt. Its build also uses
+the packages pinned in requirements-build.lock.txt. These components are
+copyright their respective authors and are distributed under their own licenses.
+
+The release ZIP includes the applicable license texts in the
+third-party-licenses directory. Droste's release builder copies those texts from
+the exact Python environment used to create Droste.exe, so the notices match the
+shipped binary.
+
+Runtime packages
+----------------
+
+- Python
+- blinker
+- cffi
+- cheroot
+- click
+- colorama
+- cryptography
+- Flask
+- itsdangerous
+- jaraco.functools
+- Jinja2
+- MarkupSafe
+- more-itertools
+- Pillow
+- pycparser
+- pywin32
+- qrcode
+- Werkzeug
+- PyInstaller bootloader
+
+Build packages
+--------------
+
+- altgraph
+- packaging
+- pefile
+- PyInstaller
+- pyinstaller-hooks-contrib
+- pywin32-ctypes
+- setuptools
+
+No endorsement by the authors of these components is implied.

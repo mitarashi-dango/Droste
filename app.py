@@ -21,11 +21,16 @@ from cheroot.wsgi import Server as CherootServer
 import qrcode
 from tls_utils import ensure_local_tls_assets
 
+_log_path = os.environ.get("DROSTE_LOG_PATH", "").strip()
+_log_handlers = None
+if _log_path:
+    _log_handlers = [logging.FileHandler(_log_path, encoding="utf-8")]
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=_log_handlers,
 )
-logger = logging.getLogger("room_indicator")
+logger = logging.getLogger("droste")
 logging.getLogger("cheroot.access").setLevel(logging.WARNING)
 
 CAPTURE_ERROR_LOG_INTERVAL = 30.0
@@ -70,22 +75,28 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
 
-# 設定ファイルのパス
-BASE_DIRECTORY = os.path.dirname(__file__)
+# 設定・端末情報・証明書は、ソース実行時はプロジェクト直下、
+# PyInstaller版ではDroste.exeと同じ書き込み可能なフォルダーに保存する。
+BASE_DIRECTORY = (
+    os.path.dirname(os.path.abspath(sys.executable))
+    if getattr(sys, "frozen", False)
+    else os.path.dirname(os.path.abspath(__file__))
+)
 CONFIG_PATH = os.environ.get(
-    "ROOM_INDICATOR_CONFIG_PATH",
+    "DROSTE_CONFIG_PATH",
     os.path.join(BASE_DIRECTORY, "config.json"),
 )
 DEVICE_REGISTRY_PATH = os.environ.get(
-    "ROOM_INDICATOR_DEVICE_REGISTRY_PATH",
+    "DROSTE_DEVICE_REGISTRY_PATH",
     os.path.join(BASE_DIRECTORY, "devices.json"),
 )
 TLS_BASE_DIRECTORY = os.environ.get(
-    "ROOM_INDICATOR_TLS_DIRECTORY",
+    "DROSTE_TLS_DIRECTORY",
     BASE_DIRECTORY,
 )
 
-DEVICE_COOKIE_NAME = "room_indicator_device"
+DEVICE_COOKIE_NAME = "droste_device"
+LEGACY_DEVICE_COOKIE_NAME = "room_indicator_device"
 DEVICE_COOKIE_MAX_AGE = 180 * 24 * 60 * 60
 PAIRING_TTL_SECONDS = 120
 PAIRING_CLAIM_TTL_SECONDS = 300
@@ -111,13 +122,27 @@ DEFAULT_CONFIG = {
     "fps": 5,
     "force_foreground": False,
     "auto_open_browser": True,
-    "pairing_base_url": "",
     "lan_ip": "",
-    "tls_enabled": True,
     "https_port": 5443,
 }
 
+PRIVATE_LAN_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
 SELF_WINDOW_MARKERS = ("Droste",)
+
+
+def is_private_lan_ipv4(value):
+    try:
+        address = ipaddress.ip_address(str(value or ""))
+    except ValueError:
+        return False
+    return address.version == 4 and any(
+        address in network for network in PRIVATE_LAN_NETWORKS
+    )
+
 
 def load_config():
     config = DEFAULT_CONFIG.copy()
@@ -139,7 +164,9 @@ def load_config():
         config["fps"] = 5
     config["force_foreground"] = bool(config.get("force_foreground", False))
     config["auto_open_browser"] = bool(config.get("auto_open_browser", True))
-    config["tls_enabled"] = bool(config.get("tls_enabled", True))
+    # v0.5以降はLAN内HTTPS専用。旧版の公開URL・平文設定は読み捨てる。
+    config.pop("pairing_base_url", None)
+    config.pop("tls_enabled", None)
     try:
         config["port"] = max(1, min(65535, int(config.get("port", 5000))))
     except (TypeError, ValueError):
@@ -150,25 +177,11 @@ def load_config():
         config["https_port"] = 5443
     if config["https_port"] == config["port"]:
         config["https_port"] = 5443 if config["port"] != 5443 else 5444
-    config["pairing_base_url"] = str(
-        config.get("pairing_base_url", "") or ""
-    ).strip().rstrip("/")
-    if config["pairing_base_url"]:
-        try:
-            parsed_base_url = urlsplit(config["pairing_base_url"])
-            if parsed_base_url.scheme.lower() != "https" or not parsed_base_url.hostname:
-                config["pairing_base_url"] = ""
-        except ValueError:
-            config["pairing_base_url"] = ""
     config["lan_ip"] = str(config.get("lan_ip", "") or "").strip()
     if config["lan_ip"]:
         try:
             configured_address = ipaddress.ip_address(config["lan_ip"])
-            if (
-                configured_address.version != 4
-                or configured_address.is_unspecified
-                or configured_address.is_multicast
-            ):
+            if not is_private_lan_ipv4(configured_address):
                 config["lan_ip"] = ""
         except ValueError:
             config["lan_ip"] = ""
@@ -231,6 +244,9 @@ def public_device(device):
 def get_authenticated_device():
     raw_token = request.cookies.get(DEVICE_COOKIE_NAME, "")
     if not raw_token:
+        # v0.4以前に登録した端末は再登録なしで移行できる。
+        raw_token = request.cookies.get(LEGACY_DEVICE_COOKIE_NAME, "")
+    if not raw_token:
         return None
 
     token_hash = hash_secret(raw_token)
@@ -266,7 +282,7 @@ def get_lan_ip():
     try:
         probe.connect(("8.8.8.8", 80))
         detected_ip = probe.getsockname()[0]
-        if detected_ip and not ipaddress.ip_address(detected_ip).is_loopback:
+        if is_private_lan_ipv4(detected_ip):
             return detected_ip
     except Exception:
         pass
@@ -275,8 +291,7 @@ def get_lan_ip():
 
     try:
         for detected_ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            address = ipaddress.ip_address(detected_ip)
-            if address.version == 4 and not address.is_loopback:
+            if is_private_lan_ipv4(detected_ip):
                 return detected_ip
     except (OSError, ValueError):
         pass
@@ -285,16 +300,7 @@ def get_lan_ip():
 
 def guest_base_url():
     config = load_config()
-    configured_base_url = config.get("pairing_base_url", "")
-    if configured_base_url:
-        return configured_base_url.rstrip("/")
-
-    if config.get("tls_enabled", True):
-        return f"https://{get_lan_ip()}:{config['https_port']}"
-
-    scheme = "https" if request.is_secure else "http"
-    port = request.environ.get("SERVER_PORT") or config.get("port", 5000)
-    return f"{scheme}://{get_lan_ip()}:{port}"
+    return f"https://{get_lan_ip()}:{config['https_port']}"
 
 
 def build_pairing_url(token):
@@ -330,9 +336,8 @@ def get_tls_assets():
 
 
 def is_secure_pairing_transport():
-    if request.is_secure:
-        return True
-    return guest_base_url().lower().startswith("https://")
+    # スマートフォン向けURLは常にローカルCAで署名したHTTPSになる。
+    return True
 
 
 def cleanup_pairings_locked():
@@ -772,16 +777,6 @@ def allowed_guest_hostnames():
         allowed.add(hostname)
         allowed.add(f"{hostname}.local")
 
-    configured_base_url = load_config().get("pairing_base_url", "")
-    if configured_base_url:
-        try:
-            configured_hostname = (
-                urlsplit(configured_base_url).hostname or ""
-            ).rstrip(".").lower()
-            if configured_hostname:
-                allowed.add(configured_hostname)
-        except ValueError:
-            pass
     return allowed
 
 
@@ -981,8 +976,6 @@ def api_tls_status():
     if local_error:
         return local_error
     config = load_config()
-    if not config.get("tls_enabled", True):
-        return jsonify({"status": "disabled", "tls_enabled": False})
     assets = get_tls_assets()
     setup_url = build_tls_setup_url()
     return jsonify({
@@ -1411,17 +1404,16 @@ def api_config():
     else:
         return jsonify(load_config())
 
-if __name__ == '__main__':
+def run_server():
     config = load_config()
     port = config.get("port", 5000)
     https_port = config.get("https_port", 5443)
-    tls_enabled = config.get("tls_enabled", True)
 
     streamer.start()
 
     if (
         config.get("auto_open_browser", False)
-        and os.environ.get("ROOM_INDICATOR_NO_BROWSER") != "1"
+        and os.environ.get("DROSTE_NO_BROWSER") != "1"
     ):
         def open_browser():
             time.sleep(1.0)
@@ -1433,50 +1425,51 @@ if __name__ == '__main__':
         threading.Thread(target=open_browser, daemon=True).start()
 
     local_ip = get_lan_ip()
-    if tls_enabled:
-        assets = get_tls_assets()
-        host_server = CherootServer(("127.0.0.1", port), app, numthreads=12)
-        guest_server = CherootServer((local_ip, https_port), app, numthreads=32)
-        guest_server.ssl_adapter = BuiltinSSLAdapter(
-            assets["server_cert"],
-            assets["server_key"],
-        )
+    assets = get_tls_assets()
+    host_server = CherootServer(("127.0.0.1", port), app, numthreads=12)
+    guest_server = CherootServer((local_ip, https_port), app, numthreads=32)
+    guest_server.ssl_adapter = BuiltinSSLAdapter(
+        assets["server_cert"],
+        assets["server_key"],
+    )
 
-        def start_host_server():
-            try:
-                host_server.start()
-            except Exception as error:
-                logger.error("Host management server stopped: %s", error, exc_info=True)
-
-        host_thread = threading.Thread(
-            target=start_host_server,
-            name="host-http-server",
-            daemon=True,
-        )
-        host_thread.start()
-
-        print("\n" + "="*68)
-        print(" 【ホストPCの管理画面】")
-        print(f"  --> http://localhost:{port}/")
-        print(" 【スマートフォンの証明書初期設定】")
-        print(f"  --> https://{local_ip}:{https_port}/setup")
-        print(" 【登録済みスマートフォンの映像画面】")
-        print(f"  --> https://{local_ip}:{https_port}/static/index.html")
-        print("  ※ PCとスマホが同じWi-Fiルーターに接続されている必要があります。")
-        print("="*68 + "\n")
-
+    def start_host_server():
         try:
-            guest_server.start()
+            host_server.start()
+        except Exception as error:
+            logger.error("Host management server stopped: %s", error, exc_info=True)
+
+    host_thread = threading.Thread(
+        target=start_host_server,
+        name="host-http-server",
+        daemon=True,
+    )
+    host_thread.start()
+
+    print("\n" + "="*68)
+    print(" 【ホストPCの管理画面】")
+    print(f"  --> http://localhost:{port}/")
+    print(" 【スマートフォンの証明書初期設定】")
+    print(f"  --> https://{local_ip}:{https_port}/setup")
+    print(" 【登録済みスマートフォンの映像画面】")
+    print(f"  --> https://{local_ip}:{https_port}/static/index.html")
+    print("  ※ PCとスマホが同じWi-Fiルーターに接続されている必要があります。")
+    print("="*68 + "\n")
+    logger.info(
+        "Droste server ready: management=http://localhost:%s/ guest=https://%s:%s/",
+        port,
+        local_ip,
+        https_port,
+    )
+
+    try:
+        guest_server.start()
+    finally:
+        try:
+            guest_server.stop()
         finally:
-            try:
-                guest_server.stop()
-            finally:
-                host_server.stop()
-    else:
-        print("\n" + "="*60)
-        print(" 【スマートフォン等から接続する場合のURL】")
-        print(f"  --> http://{local_ip}:{port}/")
-        print("  ※ TLSは無効です。")
-        print("="*60 + "\n")
-        legacy_server = CherootServer((local_ip, port), app, numthreads=32)
-        legacy_server.start()
+            host_server.stop()
+
+
+if __name__ == '__main__':
+    run_server()
