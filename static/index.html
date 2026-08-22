@@ -773,6 +773,43 @@
             color: var(--warning-color);
         }
 
+        .tls-first-connection-notice {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid rgba(255, 170, 0, 0.35);
+            border-left: 3px solid var(--warning-color);
+            border-radius: 10px;
+            background: rgba(255, 170, 0, 0.08);
+            color: var(--text-color);
+            font-size: 0.78rem;
+            line-height: 1.6;
+            text-align: left;
+        }
+
+        .tls-first-connection-notice-title {
+            margin-bottom: 6px;
+            color: var(--warning-color);
+            font-weight: 700;
+        }
+
+        .tls-first-connection-notice p + p,
+        .tls-first-connection-notice ul + p {
+            margin-top: 8px;
+        }
+
+        .tls-first-connection-notice ul {
+            margin-top: 6px;
+            padding-left: 1.4em;
+        }
+
+        .tls-first-connection-notice li + li {
+            margin-top: 4px;
+        }
+
+        .tls-first-connection-notice-stop {
+            color: var(--warning-color);
+        }
+
         .tls-fingerprint {
             width: 100%;
             overflow-wrap: anywhere;
@@ -1725,6 +1762,13 @@
             background: var(--workbench-deep);
         }
 
+        .tls-first-connection-notice {
+            border-color: var(--workbench-line);
+            border-left-color: var(--warning-color);
+            border-radius: 0;
+            background: var(--workbench-raised);
+        }
+
         .pairing-qr {
             border: 8px solid #ffffff;
             border-radius: 0;
@@ -2406,8 +2450,18 @@
                     <h2 id="tls-heading">スマホのHTTPS初期設定</h2>
                 </div>
                 <div class="pairing-box" id="tls-setup-box">
-                    <img class="pairing-qr" id="tls-setup-qr" alt="HTTPS証明書初期設定用QRコード" hidden>
                     <p class="pairing-note" id="tls-setup-message">HTTPSの準備状況を確認しています…</p>
+                    <div class="tls-first-connection-notice" role="note" aria-labelledby="tls-first-connection-notice-title">
+                        <p class="tls-first-connection-notice-title" id="tls-first-connection-notice-title">初回接続時のブラウザ警告について</p>
+                        <p>QRコードを読み取ると、スマートフォンに「この接続ではプライバシーが保護されません」などの警告が表示されます。これはDrosteがこのPC内で作成した証明書を、スマートフォンがまだ信頼していないためです。</p>
+                        <p>次の両方を確認できた場合だけ、警告画面の「詳細を表示」などから接続を続けてください。</p>
+                        <ul>
+                            <li>PCとスマートフォンが同じ信頼できるWi-Fiに接続されている</li>
+                            <li>接続後、スマートフォンに表示されるSHA-256指紋が、この画面の指紋と完全に一致する</li>
+                        </ul>
+                        <p class="tls-first-connection-notice-stop">指紋が一致しない場合は証明書を導入せず、Drosteを終了してください。</p>
+                    </div>
+                    <img class="pairing-qr" id="tls-setup-qr" alt="HTTPS証明書初期設定用QRコード" hidden>
                     <div class="pairing-url" id="tls-setup-url"></div>
                     <div class="tls-fingerprint" id="tls-fingerprint"></div>
                 </div>

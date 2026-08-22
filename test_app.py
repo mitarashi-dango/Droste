@@ -668,6 +668,23 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("Android版Chrome", setup_html)
         self.assertIn("CA証明書をインストール", setup_html)
 
+    def test_host_tls_setup_explains_first_connection_warning_before_qr(self):
+        base_directory = os.path.dirname(__file__)
+        with open(
+            os.path.join(base_directory, "static", "index.html"),
+            "r",
+            encoding="utf-8",
+        ) as file:
+            index_html = file.read()
+
+        notice_position = index_html.index('id="tls-first-connection-notice-title"')
+        qr_position = index_html.index('id="tls-setup-qr"')
+        self.assertLess(notice_position, qr_position)
+        self.assertIn("初回接続時のブラウザ警告について", index_html)
+        self.assertIn("同じ信頼できるWi-Fi", index_html)
+        self.assertIn("SHA-256指紋", index_html)
+        self.assertIn("指紋が一致しない場合は証明書を導入せず", index_html)
+
     def test_droste_icons_have_required_sizes(self):
         base_directory = os.path.dirname(__file__)
         with Image.open(
